@@ -469,7 +469,101 @@ bool supportsPrivateMarriageView(const Image& image, DWORD begin, DWORD length,
 }
 }
 
-bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, const char*& error) {
+namespace {
+bool findMarriageRouting(const Image& image, MarriageCommitTarget& target, DWORD livingEvaluator,
+    const char*& error) {
+    DWORD guardLength = 0;
+    if (!image.functionSize(target.functionRva,guardLength)) return false;
+    const auto guard = image.base+target.functionRva;
+    unsigned keyHeads = 0, keyTails = 0;
+    DWORD headAt = 0, tailAt = 0;
+    bool npcAlias = false;
+    for (DWORD i = 0; i+3 <= guardLength; ++i) {
+        const auto p = guard+i;
+        if (p[0] == 0x49 && p[1] == 0x8b && p[2] == 0xe8) npcAlias = true; // rbp = NPC 参数 r8
+        if (i+8 <= guardLength && p[0] == 0x48 && p[1] == 0x8b && p[2] == 0x45 && p[3] < 0x80 &&
+            p[4] == 0x48 && p[5] == 0x8b && p[6] == 0x58 && p[7] < 0x80) {
+            ++keyHeads; headAt=i; target.npcKeyOffsets[0]=p[3]; target.npcKeyOffsets[1]=p[7];
+        }
+        if (i+7 <= guardLength && p[0] == 0x48 && p[1] == 0x8b && p[2] == 0x5b && p[3] < 0x80 &&
+            p[4] == 0x8b && p[5] == 0x5b && p[6] < 0x80) {
+            ++keyTails; tailAt=i; target.npcKeyOffsets[2]=p[3]; target.npcKeyOffsets[3]=p[6];
+        }
+    }
+    if (!npcAlias || keyHeads != 1 || keyTails != 1 || headAt >= tailAt) {
+        error="NPC relationship key access is incompatible"; return false;
+    }
+
+    // 只在真正写入状态 2 的调用路径记住目标，不用预检 / 菜单扫描替换当前对象。
+    unsigned writers = 0;
+    for (const auto& span : image.spans) {
+        if (!span.executable) continue;
+        DWORD at = span.begin;
+        while (at < span.end && span.end-at >= 5) {
+            const auto p = static_cast<const std::uint8_t*>(std::memchr(image.base+at,0xe8,span.end-at-4));
+            if (!p) break;
+            at=static_cast<DWORD>(p-image.base)+1;
+            std::int32_t relative = 0; std::memcpy(&relative,p+1,4);
+            if (static_cast<std::int64_t>(at-1)+5+relative != target.functionRva) continue;
+            DWORD begin=0,length=0;
+            if (!image.functionRange(at-1,begin,length)) continue;
+            bool savedState=false, runtimeState=false;
+            for (DWORD i=0;i+10<=length;++i) {
+                const auto q=image.base+begin+i;
+                constexpr unsigned char save[] = {0xc6,0x44,0xf8,0x2c,0x02};
+                constexpr unsigned char append[] = {0x41,0xb1,0x02,0x44,0x8b,0x40,0x08,0x48,0x8b,0xd6};
+                if (!std::memcmp(q,save,sizeof(save))) savedState=true;
+                if (!std::memcmp(q,append,sizeof(append))) runtimeState=true;
+            }
+            if (!savedState || !runtimeState) continue;
+            if (++writers != 1) { error="multiple marriage write callers"; return false; }
+            target.writerRva=begin;
+            target.commitCallReturn=image.base+at+4;
+        }
+    }
+    if (writers != 1) { error="marriage write caller not found"; return false; }
+
+    DWORD evalLength=0;
+    if (!image.functionSize(livingEvaluator,evalLength)) return false;
+    unsigned lookups=0;
+    for (DWORD i=0;i+5<=evalLength;++i) {
+        const auto p=image.base+livingEvaluator+i;
+        if (*p!=0xe8) continue;
+        std::int32_t relative=0; std::memcpy(&relative,p+1,4);
+        const std::int64_t candidate=static_cast<std::int64_t>(livingEvaluator)+i+5+relative;
+        if (candidate<0 || candidate>=image.size || !image.contains(static_cast<DWORD>(candidate),192,true)) continue;
+        const auto code=image.base+candidate;
+        constexpr unsigned char start[] = {0x65,0x48,0x8b,0x04,0x25,0x58,0,0,0,0x4c,0x8b,0xd1};
+        if (std::memcmp(code,start,sizeof(start))) continue;
+        bool loop=false,array=false,count=false;
+        for (unsigned j=0;j+18<=192;++j) {
+            const auto q=code+j;
+            // 原查询按记录顺序返回首个状态非 3 的对象。
+            if (q[0]==0x80 && q[1]==0x78 && q[2]==target.stateOffset && q[3]==3 &&
+                q[4]==0x75 && q[5]==11 && q[6]==0x48 && q[7]==0x83 && q[8]==0xc0 &&
+                q[9]==target.recordStride && q[10]==0x48 && q[11]==0x3b && q[12]==0xc2 &&
+                q[13]==0x75 && static_cast<std::int8_t>(q[14])==-15 &&
+                q[15]==0x33 && q[16]==0xc0 && q[17]==0xc3) loop=true;
+            DWORD offset=0;
+            if (q[0]==0x49 && q[1]==0x03 && q[2]==0x8a) {
+                std::memcpy(&offset,q+3,4); if(offset==target.arrayOffset)array=true;
+            }
+            if (q[0]==0x41 && q[1]==0x39 && q[2]==0x82) {
+                std::memcpy(&offset,q+3,4); if(offset==target.arrayOffset+8)count=true;
+            }
+        }
+        if (!loop || !array || !count) continue;
+        if (++lookups!=1) { error="multiple living partner lookups"; return false; }
+        target.lookupRva=static_cast<DWORD>(candidate);
+        target.lookup=reinterpret_cast<LivingPartnerLookup>(image.base+candidate);
+    }
+    if (lookups!=1) { error="living partner lookup not found"; return false; }
+    return true;
+}
+}
+
+bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, const char*& error,
+    void* livingEvaluator) {
     target = {};
     Image image;
     if (!image.open(module)) { error = "invalid or unreadable PE64 image"; return false; }
@@ -555,6 +649,17 @@ bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, cons
         }
     }
     if (matches != 1) { error = "marriage eligibility function or layout not found"; return false; }
+    DWORD evaluatorRva=0;
+    if (livingEvaluator) {
+        if (!image.pointerRva(reinterpret_cast<std::uintptr_t>(livingEvaluator),evaluatorRva)) {
+            error="living condition evaluator outside host"; return false;
+        }
+    } else {
+        ConditionTarget condition{};
+        if (!FindConditionTarget(module,condition,error,ConditionKind::LivingTogether)) return false;
+        evaluatorRva=condition.evaluatorRva;
+    }
+    if (!findMarriageRouting(image,target,evaluatorRva,error)) return false;
     error = nullptr;
     return true;
 }

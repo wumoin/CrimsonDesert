@@ -10,7 +10,7 @@
 - Visual Studio C++ x64 工具链、Windows SDK。
 - 构建脚本可使用 Visual Studio 自带的 `vswhere` 查找工具链。
 - `/MT` 静态链接 C/C++ 运行库；插件本身不要求另外安装 VC 运行库包。
-- [MinHook](https://github.com/TsudaKageyu/minhook) v1.3.4，固定提交 `c3fcafdc10146beb5919319d0683e44e3c30d537`。必要的 x64 源码位于 `vendor/minhook`，保持上游实现不变。用于提交资格函数的内联挂钩及指令解析，静态编译进插件，不需要额外运行时 DLL。
+- [MinHook](https://github.com/TsudaKageyu/minhook) v1.3.4，固定提交 `c3fcafdc10146beb5919319d0683e44e3c30d537`。必要的 x64 源码位于 `vendor/minhook`，保持上游实现不变。用于提交资格、公共伴侣查询的内联挂钩及指令解析，静态编译进插件，不需要额外运行时 DLL。
 - MinHook 与所含 HDE 代码的 BSD 许可证保留于 `vendor/minhook/LICENSE.txt`；构建时复制为 `build/MinHook-LICENSE.txt`，分发二进制时应一并保留。
 
 ## 研究参考

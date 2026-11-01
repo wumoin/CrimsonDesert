@@ -4,6 +4,8 @@ Windows x64 ASI 插件，支持通过 INI 分别忽略好感等级、亲密度�
 
 另提供独立的婚姻提交资格覆盖：原版因当前角色已有其他已婚对象而拒绝时，用私有关系视图重新检查。该功能默认关闭，不强制把提交改成成功。
 
+开启提交覆盖时还会跟踪实际写入路径的目标。后续公共伴侣查询只有找到该目标真实的已婚记录，才优先选择它，避免始终返回第一位伴侣；不会为 CG 凭空创建第二位伴侣。
+
 **当前仍是实验补丁，完整多配偶行为尚未验证。** 它覆盖条件判断，不直接增加配偶、好感数值或修改存档格式。
 
 ## 原理与配置范围
@@ -113,9 +115,15 @@ IgnoreTribe=1
 [Relationships]
 ; 只在原版因现有婚姻而失败后，用私有关系视图重新检查。
 IgnoreExistingMarriageOnCommit=1
+; 0：新婚时跟随本次真正写入路径的目标。
+PreferredPartnerKey=0
 ```
 
 总开关 Enabled 必须为 1；通常还需启用 IgnoreLivingTogether，才能放开交互入口。新键默认为 0，旧版 .asi 不支持它，需要完整退出后更新插件。该开关按原版规则继续拒绝同一已婚目标、目标已婚于其他可操作角色等情况，不直接增加伴侣或写存档。仍可能被后续检查拒绝。
+
+**新婚场景自动选人时保持 PreferredPartnerKey=0。** 需要在已经真实结婚的对象之间切换时，可以将它设为日志中的 selectedKey。该选择只接受当前可操作角色下状态为已婚的记录。非 0 的指定值优先于自动目标，再次求婚前应改回 0。
+
+自动目标偏好只保留在本进程内，不写存档；重启或读档后若需要固定某位已有伴侣，可在 INI 指定其记录键。它控制所有使用原版公共伴侣查询的流程，包括部分场景、同居/召唤等，不会删除其他伴侣的关系。完整列表 UI 和离婚交互尚未完成验证。
 
 ### 4. 在游戏中使用
 
@@ -153,12 +161,22 @@ INSTALLED 和 Enabled=1 只能证明挂钩及开关状态，不代表第二次�
 ```text
 [pid=...] COMMIT RESOLVED: eligibility RVA=... arrays=... stride=... state=... playable=...
 [pid=...] COMMIT HOOK INSTALLED: original eligibility plus private-view recheck; override defaults off.
-[pid=...] STATUS ... IgnoreExistingMarriageOnCommit=1 CommitOverrideActive=1
+[pid=...] PARTNER ROUTE RESOLVED: lookup RVA=... writer RVA=... key offsets=...
+[pid=...] PARTNER ROUTE INSTALLED: native write target is preferred only after its married record exists.
+[pid=...] STATUS ... IgnoreExistingMarriageOnCommit=1 CommitOverrideActive=1 PreferredPartnerKey=0
 ```
 
 若出现 COMMIT HOOK UNAVAILABLE，提交覆盖不启用，五项条件开关仍可独立运行。CommitOverrideActive=0 表示提交覆盖未实际开启，即使 INI 请求为 1 也不会强行放行。
 
-COMMIT RECHECK 只表示原资格函数接受了重新检查的私有视图，不代表后续状态写入和保存已经成功。最终应以新 NPC 真正加入关系列表、原伴侣保留，以及保存重载后两者都存在为准。伴侣列表 UI、同居和召唤逻辑目前没有另行修改。
+COMMIT RECHECK 只表示原资格函数接受了重新检查的私有视图，不代表后续状态写入和保存已经成功。目标路由日志进一步区分：
+
+- COMMIT PREFLIGHT：菜单 / 预检接受目标，没有改当前伴侣选择。
+- COMMIT TARGET：真正的写入调用路径接受这个目标，但仍等待原版把它写成已婚。
+- COMMIT TARGET REJECTED：该写入调用路径仍被原资格检查拒绝。
+- PARTNER ROUTE：已找到目标的真实已婚缓存记录；nativeKey 是原版首选键，selectedKey 是本次选择键，marriedCandidates 是已观察到的当前角色已婚记录数。
+- PARTNER ROUTE WAIT：目标不是唯一可验证的已婚记录，保持原版选择，不伪造成功。
+
+即使看到 marriedCandidates=2，也只证明当时缓存有两条已婚记录；最终仍应以 CG 结束后的新存档及保存重载后两者都保留为准。完整伴侣列表 UI 尚未新增。
 
 ### 6. 关闭或卸载
 
@@ -176,8 +194,10 @@ COMMIT RECHECK 只表示原资格函数接受了重新检查的私有视图，�
 - 等级覆盖已增加成功/拒绝互斥的回归验证，并从当前 EXE 自动恢复等级条件字段与六种比较运算；没有固定字段偏移或运算编号表。
 - 新增提交资格函数与关系布局已离线自动定位；私有视图模型验证了现有伴侣排除、重复目标拒绝、其他角色关系保留和源数据不变。MinHook 在私有映像上安装 / 撤回并恢复了入口字节，没有执行游戏函数。
 - 包括提交开关在内的 128 种总开关 / 子开关组合已离线验证。
+- 对象路由模型验证了 B 未婚时保留 A、A/B 均已婚时返回真实 B 缓存记录、跨组件按标识选人、非法或其他角色的对象键回退，以及两条记录不被改写。
 - **五项条件覆盖的完整实际行为，以及第二次婚姻写入、婚礼、多人关系保存重载、离婚仍未完成验证。**
-- **新增提交覆盖尚未在实际游戏进程中验证；不能据此宣称已经实现完整多伴侣。**
+- 用户已提供旧提交版本的真实挂钩 / 重新检查日志及 CG 选到 A 的反馈；**新增对象路由仍只有离线验证，不能据此宣称已经实现完整多伴侣。**
+- 用户后续的运行日志与 15:54 slot108 已确认同一角色同时保存四条已婚记录，原 A 保留。**同居 / 召唤仍只显示当前一人，不能把记录并存当作多人同时出场已经实现。** 具体对比见验证记录。
 
 目前只构建了新版输出，没有自动替换游戏目录的插件或继续实机测试。验证程序不随插件运行，也未加入仓库。
 

@@ -29,6 +29,7 @@ struct Settings {
     bool enabled = false;
     LONG requested = 0;
     bool ignoreExistingMarriageOnCommit = false;
+    DWORD preferredPartnerKey = 0;
     LONG active() const { return enabled ? requested : 0; }
 };
 
@@ -37,6 +38,7 @@ Settings readSettings() {
     settings.enabled = GetPrivateProfileIntW(L"Experiment", L"Enabled", 0, iniPath) != 0;
     settings.ignoreExistingMarriageOnCommit = GetPrivateProfileIntW(
         L"Relationships", L"IgnoreExistingMarriageOnCommit", 0, iniPath) != 0;
+    settings.preferredPartnerKey=GetPrivateProfileIntW(L"Relationships",L"PreferredPartnerKey",0,iniPath);
     for (unsigned i = 0; i < conditionCount; ++i) {
         // 保持旧配置的行为：缺少子开关时只启用同居覆盖，其他条件不动。
         const int fallback = i == static_cast<unsigned>(ConditionKind::LivingTogether) ? 1 : 0;
@@ -163,27 +165,30 @@ DWORD WINAPI run(void*) {
     }
     log("INSTALLED: five condition evaluator wrappers. INI reloads every 5 seconds.");
     // 提交检查是独立的可选挂钩。定位或安装失败不会强行放行婚姻提交。
-    const bool commitHookReady = InstallMarriageCommitHook(GetModuleHandleW(nullptr),log);
+    const bool commitHookReady = InstallMarriageCommitHook(GetModuleHandleW(nullptr),log,
+        targets[static_cast<unsigned>(ConditionKind::LivingTogether)].evaluator);
     LONG oldRequested = -1;
     int oldEnabled = -1;
     int oldCommit = -1;
+    DWORD oldPartnerKey=MAXDWORD;
     for (;;) {
         const auto settings = readSettings();
         // 五项条件覆盖的总开关与子开关用一个原子位掩码发布。
         InterlockedExchange(&activeConditions, settings.active());
         const bool commitActive = settings.enabled && settings.ignoreExistingMarriageOnCommit && commitHookReady;
-        SetMarriageCommitOverride(commitActive);
+        SetMarriageCommitOverride(commitActive,settings.preferredPartnerKey);
         if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled ||
-            static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit) {
+            static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit || settings.preferredPartnerKey!=oldPartnerKey) {
             char message[320];
-            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d IgnoreExistingMarriageOnCommit=%d CommitOverrideActive=%d",
+            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d IgnoreExistingMarriageOnCommit=%d CommitOverrideActive=%d PreferredPartnerKey=%lu",
                 settings.enabled, (settings.requested & 1) != 0, (settings.requested & 2) != 0,
                 (settings.requested & 4) != 0, (settings.requested & 8) != 0,
-                (settings.requested & 16) != 0, settings.ignoreExistingMarriageOnCommit, commitActive);
+                (settings.requested & 16) != 0, settings.ignoreExistingMarriageOnCommit, commitActive,settings.preferredPartnerKey);
             log(message);
             oldRequested = settings.requested;
             oldEnabled = settings.enabled;
             oldCommit = settings.ignoreExistingMarriageOnCommit;
+            oldPartnerKey=settings.preferredPartnerKey;
         }
         Sleep(5000);
     }
