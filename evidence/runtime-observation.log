@@ -1,0 +1,8 @@
+2026-11-01 11:41:31 Plugin loaded. Experimental cohabitation gate only; full multi-marriage is unverified.
+2026-11-01 11:41:31 PASS: build/RTTI/evaluator/slot fingerprints and 512 result mapping checks.
+2026-11-01 11:41:31 INSTALLED: HasLivingTogether evaluator wrapper. Enabled reloads from INI every 5 seconds.
+2026-11-01 11:41:31 STATUS Enabled=0 calls(original satisfied/unsatisfied/unavailable)=0/0/0 unexpected=0
+2026-11-01 11:48:44 STATUS Enabled=0 calls(original satisfied/unsatisfied/unavailable)=0/80/0 unexpected=0
+2026-11-01 11:49:14 STATUS Enabled=1 calls(original satisfied/unsatisfied/unavailable)=0/92/0 unexpected=0
+2026-11-01 11:49:29 STATUS Enabled=1 calls(original satisfied/unsatisfied/unavailable)=0/96/0 unexpected=0
+2026-11-01 11:53:49 STATUS Enabled=1 calls(original satisfied/unsatisfied/unavailable)=0/200/0 unexpected=0

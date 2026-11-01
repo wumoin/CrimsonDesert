@@ -1,0 +1,14 @@
+/build/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.exe
+*.asi
+*.dll
+*.log
+!evidence/*.log
+.vs/
+.venv/
+__pycache__/
