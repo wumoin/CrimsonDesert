@@ -19,6 +19,7 @@ constexpr const char* labels[] = {
 static_assert(sizeof(keys) / sizeof(keys[0]) == conditionCount);
 static_assert(sizeof(labels) / sizeof(labels[0]) == conditionCount);
 Evaluate originals[conditionCount] = {};
+ConditionTarget targets[conditionCount] = {};
 HMODULE self = nullptr;
 volatile LONG activeConditions = 0;
 wchar_t logPath[MAX_PATH] = {}, iniPath[MAX_PATH] = {};
@@ -54,8 +55,30 @@ void log(const char* text) {
     }
 }
 
-std::uint8_t transform(std::uint8_t value, ConditionKind kind, bool active) {
-    if (!active) return value;
+std::uint8_t transform(std::uint8_t value, ConditionKind kind, bool active,
+    const ConditionTarget* target = nullptr, const void* object = nullptr) {
+    if (!active || value > 1) return value;
+    if (kind == ConditionKind::FriendlyLevel || kind == ConditionKind::AffinityLevel) {
+        if (!target || !target->hasComparison || !object) return value;
+        const auto bytes = static_cast<const std::uint8_t*>(object);
+        const auto index = bytes[target->comparisonOffset];
+        if (index >= 6) return value;
+        const int threshold = static_cast<std::int8_t>(bytes[target->thresholdOffset]);
+        // 使用有符号等级字段的最高值，仅用于比较，不写实际等级。
+        // 这样 >=3 成功分支通过，<3 失败分支不通过，避免两个分支同时成立。
+        constexpr int virtualLevel = 127;
+        bool satisfied = false;
+        switch (target->comparisonOps[index]) {
+        case ComparisonOp::Equal: satisfied = virtualLevel == threshold; break;
+        case ComparisonOp::NotEqual: satisfied = virtualLevel != threshold; break;
+        case ComparisonOp::LessEqual: satisfied = virtualLevel <= threshold; break;
+        case ComparisonOp::GreaterEqual: satisfied = virtualLevel >= threshold; break;
+        case ComparisonOp::Less: satisfied = virtualLevel < threshold; break;
+        case ComparisonOp::Greater: satisfied = virtualLevel > threshold; break;
+        default: return value;
+        }
+        return satisfied ? 0 : 1;
+    }
     // 仅修改有效的真/假结果，2 和未知值始终保留。
     if (kind == ConditionKind::LivingTogether) return value == 0 ? 1 : value;
     return value == 1 ? 0 : value;
@@ -66,7 +89,8 @@ std::uint8_t __fastcall replacement(void* object, void* context) {
     // 始终先由原函数处理真实上下文，不增加好感、不写关系状态。
     const auto value = originals[index](object, context);
     const auto mask = InterlockedCompareExchange(&activeConditions, 0, 0);
-    return transform(value, static_cast<ConditionKind>(index), (mask & (1L << index)) != 0);
+    return transform(value, static_cast<ConditionKind>(index), (mask & (1L << index)) != 0,
+        &targets[index], object);
 }
 
 const Evaluate replacements[] = {replacement<0>, replacement<1>, replacement<2>, replacement<3>, replacement<4>};
@@ -93,10 +117,9 @@ DWORD WINAPI run(void*) {
     wcscpy_s(iniPath, logPath);
     dot = wcsrchr(iniPath, L'.');
     wcscpy_s(dot, MAX_PATH - (dot - iniPath), L".ini");
-    log("Plugin loaded. Automatic condition discovery; full multi-marriage is unverified.");
+    log("Plugin loaded. Automatic condition discovery with comparison-preserving level overrides; full multi-marriage is unverified.");
 
     // 全部定位成功才安装；配置暂时关闭的条件也先定位，便于运行中切换。
-    ConditionTarget targets[conditionCount] = {};
     for (unsigned i = 0; i < conditionCount; ++i) {
         const char* error = nullptr;
         bool resolved = false;

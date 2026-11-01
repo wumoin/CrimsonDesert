@@ -1,8 +1,11 @@
 #pragma once
 #include <windows.h>
+#include <cstdint>
 
 // 保持已有枚举的顺序，确保旧配置对应的覆盖位不变。
 enum class ConditionKind : unsigned { FriendlyLevel, Marriageable, LivingTogether, AffinityLevel, Tribe, Count };
+
+enum class ComparisonOp : std::uint8_t { Unknown, Equal, NotEqual, LessEqual, GreaterEqual, Less, Greater };
 
 // 自动定位结果。RVA 仅用于日志，安装挂钩直接使用解析出的真实指针。
 struct ConditionTarget {
@@ -13,6 +16,11 @@ struct ConditionTarget {
     DWORD vtableRva = 0;
     DWORD evaluatorRva = 0;
     unsigned slotIndex = 0;
+    // 等级条件同时用于成功和失败分支，需保留比较运算，不能统一返回“满足”。
+    bool hasComparison = false;
+    unsigned comparisonOffset = 0;
+    unsigned thresholdOffset = 0;
+    ComparisonOp comparisonOps[6] = {};
 };
 
 // 只读取模块；不会执行游戏函数、改内存或安装挂钩。

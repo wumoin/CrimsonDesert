@@ -215,6 +215,98 @@ bool dispatchSlot(const Image& image, DWORD rva, unsigned& index) {
     return true;
 }
 
+// 从等级评估器恢复运算字段、阈值字段及 switch 表的实际比较语义。
+// 同一个函数用于“>=3 成功”和“<3 失败”，两者必须按同一虚拟等级互斥求值。
+bool comparisonLayout(const Image& image, DWORD rva, ConditionKind kind, ConditionTarget& target) {
+    DWORD length = 0;
+    if (!image.functionSize(rva, length)) return false;
+    const auto code = image.base + rva;
+    unsigned objectRegister = 0, switches = 0;
+    DWORD tableAt = 0;
+    for (DWORD i = 0; i + 8 <= length; ++i) {
+        auto p = code + i;
+        unsigned prefix = 0, rex = 0;
+        if (p[0] >= 0x40 && p[0] <= 0x4f) { rex = p[0]; prefix = 1; ++p; }
+        // movzx eax,byte ptr [object+disp8]; cmp eax,5
+        if (p[0] != 0x0f || p[1] != 0xb6 || (p[2] & 0xf8) != 0x40 ||
+            (p[2] & 7) == 4 || (rex & 4) || p[3] >= 0x80 ||
+            p[4] != 0x83 || p[5] != 0xf8 || p[6] != 5) continue;
+        if (++switches != 1) return false;
+        objectRegister = (p[2] & 7) + ((rex & 1) ? 8u : 0u);
+        target.comparisonOffset = p[3];
+        tableAt = i + prefix + 7;
+        i += prefix + 6;
+    }
+    if (switches != 1) return false;
+
+    // lea rdx,[rip+base]; mov ecx,[rdx+rax*4+table]; add rcx,rdx; jmp rcx
+    DWORD tableRva = 0, baseRva = 0;
+    unsigned tables = 0;
+    const DWORD searchEnd = (std::min)(length, tableAt + 64);
+    for (DWORD i = tableAt; i + 19 <= searchEnd; ++i) {
+        const auto p = code + i;
+        constexpr unsigned char indexLoad[] = {0x8b,0x8c,0x82};
+        constexpr unsigned char tail[] = {0x48,0x03,0xca,0xff,0xe1};
+        if (p[0] != 0x48 || p[1] != 0x8d || p[2] != 0x15 ||
+            std::memcmp(p+7,indexLoad,sizeof(indexLoad)) || std::memcmp(p+14,tail,sizeof(tail))) continue;
+        std::int32_t relativeBase = 0, relativeTable = 0;
+        std::memcpy(&relativeBase,p+3,4);
+        std::memcpy(&relativeTable,p+10,4);
+        const std::int64_t base = static_cast<std::int64_t>(rva) + i + 7 + relativeBase;
+        const std::int64_t table = base + relativeTable;
+        if (++tables != 1 || base < 0 || base >= image.size || table < 0 || table >= image.size ||
+            !image.contains(static_cast<DWORD>(table),6*sizeof(DWORD))) return false;
+        baseRva = static_cast<DWORD>(base);
+        tableRva = static_cast<DWORD>(table);
+    }
+    if (tables != 1) return false;
+
+    bool haveThreshold = false;
+    for (unsigned index = 0; index < 6; ++index) {
+        std::int32_t relativeCase = 0;
+        if (!image.read(tableRva + index*sizeof(DWORD),relativeCase)) return false;
+        const std::int64_t branch = static_cast<std::int64_t>(baseRva) + relativeCase;
+        if (branch < rva || branch + 16 > static_cast<std::int64_t>(rva) + length) return false;
+        auto p = image.base + branch;
+        unsigned rex = 0;
+        if (p[0] >= 0x40 && p[0] <= 0x4f) { rex = p[0]; ++p; }
+        unsigned threshold = 0;
+        const unsigned char* result = nullptr;
+        if (kind == ConditionKind::FriendlyLevel) {
+            // cmp level8,[object+disp8]
+            if (p[0] != 0x3a || (p[1] & 0xc0) != 0x40 || (p[1] & 7) == 4 || p[2] >= 0x80 ||
+                (p[1] & 7) + ((rex & 1) ? 8u : 0u) != objectRegister) return false;
+            threshold = p[2];
+            result = p + 3;
+        } else {
+            // movsx eax,byte ptr [object+disp8]; cmp level32,eax
+            if (p[0] != 0x0f || p[1] != 0xbe || (p[2] & 0xf8) != 0x40 ||
+                (p[2] & 7) == 4 || (rex & 4) || p[3] >= 0x80 ||
+                (p[2] & 7) + ((rex & 1) ? 8u : 0u) != objectRegister ||
+                p[4] != 0x3b || (p[5] & 0xc7) != 0xc0) return false;
+            threshold = p[3];
+            result = p + 6;
+        }
+        if (haveThreshold && target.thresholdOffset != threshold) return false;
+        target.thresholdOffset = threshold;
+        haveThreshold = true;
+        // setcc al; test al,al; sete al，把普通布尔比较转成引擎 0=满足的结果。
+        if (result[0] != 0x0f || result[2] != 0xc0 || result[3] != 0x84 ||
+            result[4] != 0xc0 || result[5] != 0x0f || result[6] != 0x94 || result[7] != 0xc0) return false;
+        switch (result[1]) {
+        case 0x94: target.comparisonOps[index]=ComparisonOp::Equal; break;
+        case 0x95: target.comparisonOps[index]=ComparisonOp::NotEqual; break;
+        case 0x9e: target.comparisonOps[index]=ComparisonOp::LessEqual; break;
+        case 0x9d: target.comparisonOps[index]=ComparisonOp::GreaterEqual; break;
+        case 0x9c: target.comparisonOps[index]=ComparisonOp::Less; break;
+        case 0x9f: target.comparisonOps[index]=ComparisonOp::Greater; break;
+        default: return false;
+        }
+    }
+    target.hasComparison = true;
+    return true;
+}
+
 bool evaluateVtable(const Image& image, DWORD vtable, ConditionTarget& result, ConditionKind kind) {
     std::vector<DWORD> entries;
     for (unsigned i = 0; i < 128; ++i) {
@@ -232,6 +324,8 @@ bool evaluateVtable(const Image& image, DWORD vtable, ConditionTarget& result, C
         if (!matches || selected != index) { selected = index; ++matches; }
     }
     if (matches != 1) return false;
+    if ((kind == ConditionKind::FriendlyLevel || kind == ConditionKind::AffinityLevel) &&
+        !comparisonLayout(image,entries[selected],kind,result)) return false;
     result.vtableRva = vtable;
     result.slotIndex = selected;
     result.evaluatorRva = entries[selected];

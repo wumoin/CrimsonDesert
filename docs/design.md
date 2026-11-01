@@ -12,15 +12,31 @@ CheckTribe(Human) && CheckFriendlyLevel(<Me>)>=2 && IsMarriageable() && !HasLivi
 
 | 类型 | 配置键 | 有效结果覆盖 |
 | --- | --- | --- |
-| pa::ConditionData_CheckFriendlyLevel | IgnoreFriendlyLevel | 1 → 0 |
+| pa::ConditionData_CheckFriendlyLevel | IgnoreFriendlyLevel | 按虚拟等级 127 重算比较 |
 | pa::ConditionData_IsMarriageable | IgnoreMarriageable | 1 → 0 |
 | pa::ConditionData_HasLivingTogether | IgnoreLivingTogether | 0 → 1 |
-| pa::ConditionData_CheckAffinityLevel | IgnoreAffinityLevel | 1 → 0 |
+| pa::ConditionData_CheckAffinityLevel | IgnoreAffinityLevel | 按虚拟等级 127 重算比较 |
 | pa::ConditionData_CheckTribe | IgnoreTribe | 1 → 0 |
 
 引擎三态返回为 0=条件满足、1=不满足、2=上下文不可用。每个包装函数都先调用原函数，再根据总开关及子开关覆盖有效真/假结果；2 和未知值原样返回。此处没有增加好感或直接写入婚姻数据。
 
 CheckFriendlyLevel 和 CheckAffinityLevel 支持等于、不等于、大小比较等多种运算。子开关覆盖对应类型的结果，不只覆盖婚姻入口的 >=2 / >=3；CheckTribe 子开关也不限于 Human 参数。其他任务中的这些条件同样可能受影响。开关不改变好感、亲密度或角色种族，剧情与 Single/Dating/Married 阶段控制仍保留。
+
+### 等级覆盖必须保持成功与失败互斥
+
+已提取的交互数据中，Affinity_Start_Success 使用好感 >=2，Affinity_Start_Fail 使用好感 <2；Propose_Success / Propose_Shop 使用亲密度 >=3，Propose_Fail / Propose_Shop_Fail 使用亲密度 <3。它们分别是独立的正向比较条件，不是共用一个比较结果后再统一取反。
+
+旧实现将等级条件的“不满足”统一改成“满足”，因此可能同时放行“>=3 成功”和“<3 拒绝”。当前实现按同一个虚拟等级 127 重新求值，使这两个比较保持互斥。实际等级不变，原结果为 2 或未知值时也不重算。
+
+自动定位器会解析等级评估器的运算字段读取、六分支 switch 表和阈值字段读取，再从各分支的 setcc / 布尔取反指令恢复比较语义。当前两个类型的字段偏移均解析为 0x1a（运算）、0x1b（阈值），六个编号分别对应 ==、!=、<=、>=、<、>；这些值没有硬编码进覆盖函数。解析失败时拒绝安装挂钩。
+
+虚拟值 127 是当前有符号单字节等级字段可表达的最高值，不是实际游戏等级上限。它可以影响其他非婚姻等级分支，例如“等级恰好等于 3”将不成立，因此仍需考虑全局条件覆盖的影响。
+
+### 示爱与求婚是不同流程
+
+Affinity_Start 与 Propose 在交互表中各有成功和失败记录，且所用等级类型及关系阶段条件不同。普通求婚成功/失败记录都包含参数值为 1 的 CheckMaritalState；示爱记录还含参数值为 0、2 的关系阶段判断。这里只确认它们不是同一交互或同一关系阶段检查，没有把所有阶段条件统一移除。
+
+已触发拒绝对话、好感降低，说明玩家进入了失败结果，但不能仅凭此确定所有底层限制都已满足。修正比较方向不等于直接写入交往或婚姻状态。
 
 当前 CheckTribe 实现的匹配路径返回 0，不匹配或未能解析出有效对象的路径返回 1，没有独立的返回 2 分支。因此启用种族覆盖后，这两种返回 1 的情况都会被覆盖，无法仅凭返回值区分。其他类型若返回 2，则仍原样保留。
 
@@ -34,7 +50,8 @@ CheckFriendlyLevel 和 CheckAffinityLevel 支持等于、不等于、大小比�
 4. 查找指向 Locator 的绝对指针，将紧随其后的指针数组视为候选虚表；只接受指向宿主可执行区的入口。
 5. 在候选虚表各入口中识别条件分派函数，从条件对象自身虚表的间接尾跳转中读取评估槽偏移，除以指针大小得到实际槽号。不固定分派槽或评估槽。
 6. 使用 PE x64 异常目录确定评估函数边界，再检查上下文读取、不可用返回和对应的布尔结果转换模式。
-7. 要求每个条件只有一个兼容候选。全部五个条件定位完成后才进入挂钩安装阶段。
+7. 对两个等级类型，再从函数中恢复比较字段、六分支跳转表及每个分支的比较运算。
+8. 要求每个条件只有一个兼容候选。全部五个条件定位完成后才进入挂钩安装阶段。
 
 分派指令支持已识别的 disp8 / disp32 间接跳转，以及可选的 REX.W 前缀。忽略相对调用地址、上下文字段偏移、栈布局和跳转距离等构建细节；保留结构与返回结果模式检查。
 
