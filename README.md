@@ -74,7 +74,7 @@ Crimson Desert/
 
 ### 4. 开启需要的功能
 
-发布附件默认 `Enabled=0`，安装后需要编辑游戏目录中的 INI，将其设为 `1`，再按下节选择功能。
+发布附件已默认开启全部功能，`PreferredPartnerKey=0` 保持自动选择伴侣。需要关闭某项功能时，将对应开关设为 `0`。
 
 更新旧版本时，完整退出游戏后替换 `.asi`，并在现有 INI 中补齐新增选项。只修改 INI 无法让旧 `.asi` 获得新功能；直接覆盖 INI 则会重置自己的配置。
 
@@ -84,7 +84,7 @@ Crimson Desert/
 
 ### 完整配置示例
 
-以下示例开启五项条件覆盖和多次婚姻提交；全员召唤保持关闭，可在婚礼 CG 结束后另行开启。这是实验用配置，**不是附件默认值**：
+以下为发布附件的完整默认配置：除 `PreferredPartnerKey=0` 外，其余开关均为 `1`。
 
 ```ini
 [Experiment]
@@ -109,7 +109,7 @@ IgnoreExistingMarriageOnCommit=1
 ; 0 自动选择当前伴侣；其他数值指定已婚对象编号。
 PreferredPartnerKey=0
 ; 设为 1 后，召唤或收回当前伴侣时，也处理其他已婚伴侣。
-SpawnAllPartners=0
+SpawnAllPartners=1
 ```
 
 在现有对应分区中修改键值，不要重复创建同名分区或同名键。
@@ -118,17 +118,17 @@ SpawnAllPartners=0
 
 | 分区 | 配置项 | 附件默认值 | 开启或设置后的作用 |
 | --- | --- | --- | --- |
-| `Experiment` | `Enabled` | `0` | 启用下方所选功能；设为 `0` 关闭全部覆盖 |
-| `Conditions` | `IgnoreFriendlyLevel` | `0` | 按虚拟高等级判断好感度门槛，实际好感度不变 |
-| `Conditions` | `IgnoreMarriageable` | `0` | 绕过对方是否可结婚的判断 |
+| `Experiment` | `Enabled` | `1` | 启用下方所选功能；设为 `0` 关闭全部覆盖 |
+| `Conditions` | `IgnoreFriendlyLevel` | `1` | 按虚拟高等级判断好感度门槛，实际好感度不变 |
+| `Conditions` | `IgnoreMarriageable` | `1` | 绕过对方是否可结婚的判断 |
 | `Conditions` | `IgnoreLivingTogether` | `1` | 绕过已有同居对象的入口限制 |
-| `Conditions` | `IgnoreAffinityLevel` | `0` | 按虚拟高等级判断亲密度门槛，实际亲密度不变 |
-| `Conditions` | `IgnoreTribe` | `0` | 绕过种族条件，实际种族不变 |
-| `Relationships` | `IgnoreExistingMarriageOnCommit` | `0` | 提交婚姻时排除自己现有婚姻的阻碍，并启用当前伴侣选择 |
+| `Conditions` | `IgnoreAffinityLevel` | `1` | 按虚拟高等级判断亲密度门槛，实际亲密度不变 |
+| `Conditions` | `IgnoreTribe` | `1` | 绕过种族条件，实际种族不变 |
+| `Relationships` | `IgnoreExistingMarriageOnCommit` | `1` | 提交婚姻时排除自己现有婚姻的阻碍，并启用当前伴侣选择 |
 | `Relationships` | `PreferredPartnerKey` | `0` | `0` 自动选择；非零值指定当前角色的一位真实已婚对象 |
-| `Relationships` | `SpawnAllPartners` | `0` | 触发原版召唤 / 收回时，把同样动作扩展到其他真实已婚对象 |
+| `Relationships` | `SpawnAllPartners` | `1` | 触发原版召唤 / 收回时，把同样动作扩展到其他真实已婚对象 |
 
-总开关默认关闭，所以 `IgnoreLivingTogether=1` 不会在刚安装时自行生效。缺少配置键时也使用表中的默认值。
+表中是发布 INI 的默认值。删除配置文件或键时，插件仍使用关闭兜底（仅同居子开关缺省为 `1`），请保留完整配置。
 
 五项条件覆盖作用于对应条件的所有调用，其他任务或互动也可能受到影响。它们不会跳过所有剧情或关系阶段，也不会为缺少婚礼内容的 NPC 自动补齐脚本。
 
