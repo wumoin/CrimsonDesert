@@ -11,6 +11,9 @@ const char* typeNameFor(ConditionKind kind) {
     case ConditionKind::FriendlyLevel: return ".?AVConditionData_CheckFriendlyLevel@pa@@";
     case ConditionKind::Marriageable: return ".?AVConditionData_IsMarriageable@pa@@";
     case ConditionKind::LivingTogether: return ".?AVConditionData_HasLivingTogether@pa@@";
+    case ConditionKind::AffinityLevel: return ".?AVConditionData_CheckAffinityLevel@pa@@";
+    case ConditionKind::Tribe: return ".?AVConditionData_CheckTribe@pa@@";
+    case ConditionKind::Count: return nullptr;
     }
     return nullptr;
 }
@@ -150,31 +153,41 @@ public:
     }
 };
 
-// 不比较函数完整机器码；保留与三态返回语义有关的两段特征。
+// 不比较完整机器码；按条件类型检查上下文读取与有效返回值模式。
 // 忽略堆栈布局、context 字段偏移、相对调用地址和分支距离等易随构建变化的值。
 bool compatibleEvaluator(const Image& image, DWORD rva, ConditionKind kind) {
     DWORD length = 0;
     if (!image.functionSize(rva, length)) return false;
     const auto code = image.base + rva;
     bool contextLoad = false, unavailable = false, predicate = false;
+    bool tribeFailure = false, tribeSuccess = false, byteReturn = false;
     unsigned inversions = 0;
     for (DWORD i = 0; i + 7 <= (std::min)(length, DWORD{96}); ++i)
-        // mov r64,[rdx+disp32]，兼容当前三种评估器使用的 RCX / RSI 寄存器。
-        if (code[i] == 0x48 && code[i+1] == 0x8b && (code[i+2] & 0xc7) == 0x82)
+        // 关系评估器从 RDX 读取上下文；种族评估器先把 RDX 保存到 RAX。
+        if (code[i] == 0x48 && code[i+1] == 0x8b &&
+            (code[i+2] & 0xc7) == (kind == ConditionKind::Tribe ? 0x80 : 0x82))
             contextLoad = true;
     constexpr unsigned char nullPredicate[] = {0x48,0x85,0xdb,0x0f,0x94,0xc3};
     constexpr unsigned char invertBoolean[] = {0x84,0xc0,0x0f,0x94,0xc0};
     for (DWORD i = 0; i + 2 <= length; ++i) {
         if (code[i] == 0xb0 && code[i+1] == 2) unavailable = true;
+        if (code[i] == 0xb3 && code[i+1] == 1) tribeFailure = true; // mov bl,1
+        if ((code[i] == 0x32 || code[i] == 0x30) && code[i+1] == 0xdb) tribeSuccess = true; // xor bl,bl
+        if (i + 3 <= length && code[i] == 0x0f && code[i+1] == 0xb6 && code[i+2] == 0xc3)
+            byteReturn = true; // movzx eax,bl
         if (i + sizeof(invertBoolean) <= length &&
             std::memcmp(code + i, invertBoolean, sizeof(invertBoolean)) == 0) ++inversions;
         if (i + sizeof(nullPredicate) <= length &&
             std::memcmp(code + i, nullPredicate, sizeof(nullPredicate)) == 0) predicate = true;
     }
-    if (!contextLoad || !unavailable) return false;
+    if (!contextLoad) return false;
+    // CheckTribe 的不匹配路径返回 1、匹配路径返回 0，没有单独的返回 2 分支。
+    if (kind == ConditionKind::Tribe) return tribeFailure && tribeSuccess && byteReturn;
+    if (!unavailable) return false;
     if (kind == ConditionKind::LivingTogether) return predicate;
-    // 可结婚判断把普通布尔值取反为三态结果；好感比较有多个比较运算分支。
-    return inversions >= (kind == ConditionKind::FriendlyLevel ? 2u : 1u);
+    // 可结婚判断把普通布尔值取反为三态结果；好感和亲密度有多个比较分支。
+    const bool comparison = kind == ConditionKind::FriendlyLevel || kind == ConditionKind::AffinityLevel;
+    return inversions >= (comparison ? 2u : 1u);
 }
 
 // 在虚表各入口中识别“小分派函数”，从其跳转指令读取真正评估槽号。

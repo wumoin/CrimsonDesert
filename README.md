@@ -1,6 +1,6 @@
 # Crimson Desert 婚姻条件实验补丁
 
-Windows x64 ASI 插件，支持通过 INI 分别忽略好感等级、可结婚判断和已有同居对象限制，并在启动时自动定位对应函数。
+Windows x64 ASI 插件，支持通过 INI 分别忽略好感等级、亲密度等级、种族、可结婚判断和已有同居对象限制，并在启动时自动定位对应函数。
 
 **当前仍是实验补丁，完整多配偶行为尚未验证。** 它覆盖条件判断，不直接增加配偶、好感数值或修改存档格式。
 
@@ -19,16 +19,18 @@ Windows x64 ASI 插件，支持通过 INI 分别忽略好感等级、可结婚�
 | IgnoreFriendlyLevel | CheckFriendlyLevel | 1 → 0，让好感/信任等级条件通过 |
 | IgnoreMarriageable | IsMarriageable | 1 → 0，让可结婚判断通过 |
 | IgnoreLivingTogether | HasLivingTogether | 0 → 1，让外层“没有同居对象”条件通过 |
+| IgnoreAffinityLevel | CheckAffinityLevel | 1 → 0，让亲密度等级条件通过 |
+| IgnoreTribe | CheckTribe | 1 → 0，让种族条件通过，包括人类要求 |
 
 返回值 2 和未知值始终保留。总开关关闭或对应子开关关闭时，原样返回。
 
-**子开关作用于对应条件类型的所有调用，不仅是婚姻菜单。** 忽略好感条件可能改变其他任务或交互的分支。它不会增加实际好感，也不覆盖独立的 CheckAffinityLevel 亲密度条件、种族、剧情或婚姻阶段检查。
+**子开关作用于对应条件类型的所有调用，不仅是婚姻菜单。** 好感、亲密度和种族条件也可能用于其他任务或交互。开关只覆盖判断，不增加实际好感/亲密度，也不改变角色种族；剧情和婚姻阶段检查仍保留。绕过种族或可结婚检查不会自动为 NPC 补齐婚姻交互、任务或婚礼脚本。
 
 ## 自动定位与更新兼容性
 
 插件不再保存类型、虚函数表、评估函数的固定 RVA，也不固定评估槽号：
 
-1. 在主模块可读区域查找三个目标类的 RTTI 类型名称。
+1. 在主模块可读区域查找五个目标类的 RTTI 类型名称。
 2. 根据 MSVC x64 RTTI 结构找到各自的主虚函数表。
 3. 从虚函数分派代码解析实际评估槽号。
 4. 检查目标唯一性、内存范围、函数边界与返回值相关的指令模式，再安装挂钩。
@@ -73,7 +75,7 @@ D:\gametool\steam\steamapps\common\Crimson Desert\bin64\
 
 ### 3. 配置要忽略的条件
 
-编辑**游戏 bin64 中**的 CohabitationGateExperiment.ini。例如，要忽略三项条件：
+编辑**游戏 bin64 中**的 CohabitationGateExperiment.ini。例如，要忽略五项条件：
 
 ```ini
 [Experiment]
@@ -87,11 +89,17 @@ IgnoreFriendlyLevel=1
 IgnoreMarriageable=1
 ; 忽略已有同居对象限制。
 IgnoreLivingTogether=1
+; 忽略亲密度等级条件，不增加实际亲密度。
+IgnoreAffinityLevel=1
+; 忽略种族条件（包括人类要求），不改变角色种族。
+IgnoreTribe=1
 ```
 
 每项可独立设为 0 或 1。总开关必须为 1 才执行覆盖。
 
-仓库默认 Enabled=0、IgnoreFriendlyLevel=0、IgnoreMarriageable=0、IgnoreLivingTogether=1。旧 INI 未提供子开关时也使用这组子开关默认值，以保持原来的同居条件覆盖行为。
+仓库默认总开关关闭，只有 IgnoreLivingTogether 默认为 1，其余四个子开关默认均为 0。旧 INI 未提供子开关时也使用这些默认值，以保持原来的同居条件覆盖行为。
+
+只想新增亲密度与种族覆盖时，在现有 [Conditions] 中增加 IgnoreAffinityLevel=1 和 IgnoreTribe=1，并确保 [Experiment] 的 Enabled=1。需要更新 .asi，旧三条件版不会识别这两个新开关。
 
 ### 4. 在游戏中使用
 
@@ -99,7 +107,7 @@ IgnoreLivingTogether=1
 
 若要观察已有同居对象的限制是否解除，需要已同居进度以及另一个测试对象。若要观察好感条件覆盖，可在好感不达标的实验进度中对照开关前后的交互。
 
-游戏运行时约每 5 秒重新读取 INI。修改后退出当前 NPC 交互并再次交互，可重新触发条件评估。实际亲密度、剧情、种族、恋爱阶段以及婚姻写入逻辑仍可能阻止后续流程。
+游戏运行时约每 5 秒重新读取 INI。修改后退出当前 NPC 交互并再次交互，可重新触发条件评估。未启用覆盖的条件、剧情、恋爱阶段以及婚姻写入逻辑仍可能阻止后续流程。
 
 ### 5. 查看加载结果
 
@@ -109,12 +117,14 @@ IgnoreLivingTogether=1
 [pid=...] RESOLVED: CheckFriendlyLevel ... slot=... evaluator RVA=...
 [pid=...] RESOLVED: IsMarriageable ... slot=... evaluator RVA=...
 [pid=...] RESOLVED: HasLivingTogether ... slot=... evaluator RVA=...
-[pid=...] PASS: all three unique RTTI/vtable/dispatch targets and evaluator compatibility checks.
-[pid=...] INSTALLED: three condition evaluator wrappers. INI reloads every 5 seconds.
-[pid=...] STATUS Enabled=1 IgnoreFriendlyLevel=1 IgnoreMarriageable=1 IgnoreLivingTogether=1
+[pid=...] RESOLVED: CheckAffinityLevel ... slot=... evaluator RVA=...
+[pid=...] RESOLVED: CheckTribe ... slot=... evaluator RVA=...
+[pid=...] PASS: all five unique RTTI/vtable/dispatch targets and evaluator compatibility checks.
+[pid=...] INSTALLED: five condition evaluator wrappers. INI reloads every 5 seconds.
+[pid=...] STATUS Enabled=1 IgnoreFriendlyLevel=1 IgnoreMarriageable=1 IgnoreLivingTogether=1 IgnoreAffinityLevel=1 IgnoreTribe=1
 ```
 
-三个条件全部定位成功才安装。任一槽安装失败会尝试撤回之前的槽，覆盖保持关闭。启动器或其他子进程可能没有这些类型，需根据同一 PID 的记录判断主游戏是否成功安装。
+五个条件全部定位成功才安装。任一槽安装失败会尝试撤回之前的槽，覆盖保持关闭。启动器或其他子进程可能没有这些类型，需根据同一 PID 的记录判断主游戏是否成功安装。
 
 INSTALLED 和 Enabled=1 只能证明挂钩及开关状态，不代表第二次结婚已经验证成功。没有日志时先检查安装目录与 ASI Loader；REFUSED 会写明定位失败的具体原因。
 
@@ -127,10 +137,11 @@ INSTALLED 和 Enabled=1 只能证明挂钩及开关状态，不代表第二次�
 ## 验证范围
 
 - 旧诊断版本曾带插件进入游戏场景，并记录有效的“没有同居对象”返回。
-- 当前自动定位在更新后的本机 EXE 1.0.0.3462 / Steam build 26356046 上通过了**离线映射验证**，三种评估函数均找到。
+- 三条件版已有用户提供的运行日志确认自动定位和挂钩安装成功，这不等于婚姻玩法验证。
+- 当前五条件版在本机 EXE 1.0.0.3462 / Steam build 26356046 上通过了**离线映射验证**，五种评估函数均找到。
 - 模拟虚表移动和槽号变化后可重新定位；类型缺失、关键指令模式变化、重复候选和非游戏宿主均拒绝定位。
-- 中文 INI 读取、16 种总开关/子开关组合、三种条件的结果映射已离线验证。
-- **当前自动定位和新增子开关尚未在运行中的游戏里验证；第二次求婚、婚礼、多人关系保存重载、离婚仍未验证。**
+- 中文 INI 读取、64 种总开关/子开关组合、五种条件的结果映射已离线验证。
+- **当前五条件版和新增亲密度/种族开关尚未在运行中的游戏里验证；第二次求婚、婚礼、多人关系保存重载、离婚仍未验证。**
 
 目前只构建了新版输出，没有自动替换游戏目录的插件或继续实机测试。验证程序不随插件运行，也未加入仓库。
 

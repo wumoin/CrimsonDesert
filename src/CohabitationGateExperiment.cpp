@@ -1,4 +1,4 @@
-// 自动定位三个关系条件，按 INI 覆盖结果；不修改游戏文件或存档数据。
+// 自动定位关系和种族条件，按 INI 覆盖结果；不修改游戏文件或存档数据。
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <cstdint>
@@ -9,9 +9,15 @@
 namespace {
 // 引擎使用 0=满足、1=不满足、2=上下文不可用，不能使用普通 bool 代替。
 using Evaluate = std::uint8_t(__fastcall*)(void*, void*);
-constexpr unsigned conditionCount = 3;
-constexpr const wchar_t* keys[] = {L"IgnoreFriendlyLevel", L"IgnoreMarriageable", L"IgnoreLivingTogether"};
-constexpr const char* labels[] = {"CheckFriendlyLevel", "IsMarriageable", "HasLivingTogether"};
+constexpr unsigned conditionCount = static_cast<unsigned>(ConditionKind::Count);
+constexpr const wchar_t* keys[] = {
+    L"IgnoreFriendlyLevel", L"IgnoreMarriageable", L"IgnoreLivingTogether", L"IgnoreAffinityLevel", L"IgnoreTribe"
+};
+constexpr const char* labels[] = {
+    "CheckFriendlyLevel", "IsMarriageable", "HasLivingTogether", "CheckAffinityLevel", "CheckTribe"
+};
+static_assert(sizeof(keys) / sizeof(keys[0]) == conditionCount);
+static_assert(sizeof(labels) / sizeof(labels[0]) == conditionCount);
 Evaluate originals[conditionCount] = {};
 HMODULE self = nullptr;
 volatile LONG activeConditions = 0;
@@ -27,7 +33,7 @@ Settings readSettings() {
     Settings settings;
     settings.enabled = GetPrivateProfileIntW(L"Experiment", L"Enabled", 0, iniPath) != 0;
     for (unsigned i = 0; i < conditionCount; ++i) {
-        // 保持旧配置的行为：缺少新键时只启用同居限制覆盖，好感和可结婚判断不动。
+        // 保持旧配置的行为：缺少子开关时只启用同居覆盖，其他条件不动。
         const int fallback = i == static_cast<unsigned>(ConditionKind::LivingTogether) ? 1 : 0;
         if (GetPrivateProfileIntW(L"Conditions", keys[i], fallback, iniPath) != 0)
             settings.requested |= 1L << i;
@@ -63,7 +69,8 @@ std::uint8_t __fastcall replacement(void* object, void* context) {
     return transform(value, static_cast<ConditionKind>(index), (mask & (1L << index)) != 0);
 }
 
-const Evaluate replacements[] = {replacement<0>, replacement<1>, replacement<2>};
+const Evaluate replacements[] = {replacement<0>, replacement<1>, replacement<2>, replacement<3>, replacement<4>};
+static_assert(sizeof(replacements) / sizeof(replacements[0]) == conditionCount);
 
 bool exchangeSlot(const ConditionTarget& target, void* expected, void* replacementPointer) {
     DWORD prior = 0;
@@ -110,7 +117,7 @@ DWORD WINAPI run(void*) {
         log(message);
         originals[i] = reinterpret_cast<Evaluate>(target.evaluator);
     }
-    log("PASS: all three unique RTTI/vtable/dispatch targets and evaluator compatibility checks.");
+    log("PASS: all five unique RTTI/vtable/dispatch targets and evaluator compatibility checks.");
 
     // 安装期间维持原版行为；任一槽安装失败时撤回之前安装的槽。
     unsigned installed = 0;
@@ -127,18 +134,19 @@ DWORD WINAPI run(void*) {
         log("REFUSED: could not install all condition hooks; overrides disabled.");
         return 1;
     }
-    log("INSTALLED: three condition evaluator wrappers. INI reloads every 5 seconds.");
+    log("INSTALLED: five condition evaluator wrappers. INI reloads every 5 seconds.");
     LONG oldRequested = -1;
     int oldEnabled = -1;
     for (;;) {
         const auto settings = readSettings();
-        // 一个原子位掩码同时发布总开关与三个子开关，回调不会读取半更新配置。
+        // 一个原子位掩码同时发布总开关与所有子开关，回调不会读取半更新配置。
         InterlockedExchange(&activeConditions, settings.active());
         if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled) {
-            char message[200];
-            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d",
+            char message[256];
+            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d",
                 settings.enabled, (settings.requested & 1) != 0, (settings.requested & 2) != 0,
-                (settings.requested & 4) != 0);
+                (settings.requested & 4) != 0, (settings.requested & 8) != 0,
+                (settings.requested & 16) != 0);
             log(message);
             oldRequested = settings.requested;
             oldEnabled = settings.enabled;

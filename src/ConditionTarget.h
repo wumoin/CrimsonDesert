@@ -1,7 +1,8 @@
 #pragma once
 #include <windows.h>
 
-enum class ConditionKind : unsigned { FriendlyLevel, Marriageable, LivingTogether };
+// 保持已有枚举的顺序，确保旧配置对应的覆盖位不变。
+enum class ConditionKind : unsigned { FriendlyLevel, Marriageable, LivingTogether, AffinityLevel, Tribe, Count };
 
 // 自动定位结果。RVA 仅用于日志，安装挂钩直接使用解析出的真实指针。
 struct ConditionTarget {
