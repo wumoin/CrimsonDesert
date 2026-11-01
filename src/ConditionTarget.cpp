@@ -1,5 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "ConditionTarget.h"
+#include "MarriageCommit.h"
+#include "../vendor/minhook/src/hde/hde64.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -131,7 +133,7 @@ public:
         return true;
     }
     // PE 的 x64 异常目录提供非叶函数的边界，避免把邻近函数的指令当成目标特征。
-    bool functionSize(DWORD rva, DWORD& length) const {
+    bool functionRange(DWORD rva, DWORD& begin, DWORD& length) const {
         const auto directory = exceptions;
         if (!directory.Size || directory.Size % sizeof(RUNTIME_FUNCTION) ||
             directory.VirtualAddress >= size || directory.Size > size - directory.VirtualAddress)
@@ -144,12 +146,17 @@ public:
             if (rva < fn.BeginAddress) high = mid;
             else if (rva >= fn.EndAddress) low = mid + 1;
             else {
-                if (rva != fn.BeginAddress || fn.EndAddress <= rva) return false;
-                length = fn.EndAddress - rva;
-                return length <= 4096 && contains(rva, length, true);
+                if (fn.EndAddress <= fn.BeginAddress) return false;
+                begin = fn.BeginAddress;
+                length = fn.EndAddress - begin;
+                return length <= 4096 && contains(begin, length, true);
             }
         }
         return false;
+    }
+    bool functionSize(DWORD rva, DWORD& length) const {
+        DWORD begin = 0;
+        return functionRange(rva, begin, length) && begin == rva;
     }
 };
 
@@ -398,6 +405,156 @@ bool FindConditionTarget(HMODULE module, ConditionTarget& target, const char*& e
         }
     }
     if (matches != 1) { error = "target vtable or evaluator dispatch is incompatible"; return false; }
+    error = nullptr;
+    return true;
+}
+
+namespace {
+// 私有组件只包含原函数已确认会读取的前缀，必须拒绝访问其他组件字段的变体。
+// 此处接受当前“RCX this 保存到 RSI”的只读函数族；遇到别名转存或未知访问即拒绝。
+bool supportsPrivateMarriageView(const Image& image, DWORD begin, DWORD length,
+    const MarriageCommitTarget& layout) {
+    bool selfSaved = false;
+    unsigned saves = 0;
+    for (DWORD at = 0; at < length;) {
+        unsigned char bytes[16] = {};
+        std::memcpy(bytes,image.base+begin+at,(std::min)(DWORD{15},length-at));
+        hde64s instruction{};
+        const auto count = hde64_disasm(bytes,&instruction);
+        if (!count || (instruction.flags & F_ERROR) || count > length-at) return false;
+        const auto& ins = instruction;
+        const unsigned reg = ins.modrm_reg + (ins.rex_r ? 8u : 0u);
+        const unsigned rm = ins.modrm_rm + (ins.rex_b ? 8u : 0u);
+        const bool modrm = (ins.flags & F_MODRM) != 0;
+        const bool saveSelf = modrm && ins.modrm_mod == 3 && ins.opcode == 0x8b &&
+            ins.rex_w && reg == 6 && rm == 1;
+        if (saveSelf) {
+            if (++saves != 1) return false;
+            selfSaved = true;
+            at += count;
+            continue;
+        }
+        if (!selfSaved) {
+            // 禁止把初始 this 指针存到其他寄存器、内存或交给辅助函数。
+            if (ins.opcode == 0xe8 || ins.opcode == 0xe9 || ins.opcode == 0xeb || ins.opcode == 0xff ||
+                ins.opcode == 0x51 || ins.opcode == 0x59 || (ins.opcode == 0xb9 && !ins.rex_b)) return false;
+            if (modrm && ((ins.modrm_mod == 3 && (reg == 1 || rm == 1)) ||
+                (ins.modrm_mod != 3 && (reg == 1 || rm == 1)))) return false;
+        } else {
+            if ((ins.opcode == 0x56 && !ins.rex_b) || (ins.opcode == 0xbe && !ins.rex_b)) return false;
+            if ((ins.opcode >= 0xa4 && ins.opcode <= 0xaf) || (ins.opcode == 0x96 && !ins.rex_b)) return false;
+            if (ins.opcode == 0x5e && !ins.rex_b && (at+count >= length || image.base[begin+at+count] != 0xc3))
+                return false;
+            if (modrm && ins.modrm_mod == 3 && (reg == 6 || rm == 6)) return false;
+            if (modrm && ins.modrm_mod != 3) {
+                // 不接受把 RSI 当作数据写出，也不接受以 RSI 为索引的复杂别名。
+                if (reg == 6) return false;
+                const bool sib = (ins.flags & F_SIB) != 0;
+                if (sib && ins.sib_index + (ins.rex_x ? 8u : 0u) == 6) return false;
+                const unsigned base = sib ? ins.sib_base + (ins.rex_b ? 8u : 0u) : rm;
+                if (base == 6) {
+                    if (sib || ins.p_67 || ins.p_seg ||
+                        (ins.opcode != 0x8b && ins.opcode != 0x03 && ins.opcode != 0x39)) return false;
+                    std::int64_t offset = 0;
+                    if (ins.flags & F_DISP8) offset = static_cast<std::int8_t>(ins.disp.disp8);
+                    else if (ins.flags & F_DISP32) offset = static_cast<std::int32_t>(ins.disp.disp32);
+                    if (offset != 8 && offset != layout.arrayOffset && offset != layout.arrayOffset+8)
+                        return false;
+                }
+            }
+        }
+        at += count;
+    }
+    return selfSaved && saves == 1;
+}
+}
+
+bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, const char*& error) {
+    target = {};
+    Image image;
+    if (!image.open(module)) { error = "invalid or unreadable PE64 image"; return false; }
+    unsigned matches = 0;
+    for (const auto& span : image.spans) {
+        if (!span.executable) continue;
+        DWORD at = span.begin;
+        while (at < span.end && span.end - at >= 19) {
+            const auto hit = static_cast<const std::uint8_t*>(
+                std::memchr(image.base + at, 0x80, span.end - at - 18));
+            if (!hit) break;
+            at = static_cast<DWORD>(hit - image.base);
+            const auto p = hit;
+            ++at;
+            // cmp byte ptr [record+state],2; je reject; add record,stride; cmp end; jne loop
+            if (p[1] != 0x79 || p[3] != 2 || p[4] != 0x0f || p[5] != 0x84 ||
+                p[10] != 0x48 || p[11] != 0x83 || p[12] != 0xc1 ||
+                p[14] != 0x48 || p[15] != 0x3b || p[16] != 0xca || p[17] != 0x75 ||
+                static_cast<std::int8_t>(p[18]) != -19 || p[13] < 16 || p[13] > 127 ||
+                p[2] >= p[13]) continue;
+            DWORD begin = 0, length = 0;
+            if (!image.functionRange(at - 1, begin, length)) continue;
+            const auto code = image.base + begin;
+            std::int32_t relativeReject = 0;
+            std::memcpy(&relativeReject,p+6,4);
+            const std::int64_t reject = static_cast<std::int64_t>(at - 1) + 10 + relativeReject;
+            if (reject < begin || reject + 2 > static_cast<std::int64_t>(begin) + length) continue;
+
+            MarriageCommitTarget candidate{};
+            candidate.functionRva = begin;
+            candidate.function = reinterpret_cast<MarriageEligibility>(image.base + begin);
+            candidate.stateOffset = p[2];
+            candidate.recordStride = p[13];
+            bool selfAlias = false, ownerRead = false, booleanSuccess = false, booleanReject = false;
+            unsigned arrays = 0, crossChecks = 0;
+            for (DWORD i = 0; i + 3 <= length; ++i) {
+                const auto q = code + i;
+                if (q[0] == 0x48 && q[1] == 0x8b && q[2] == 0xf1) selfAlias = true;
+                if (i + 4 <= length && q[0] == 0x48 && q[1] == 0x8b && q[2] == 0x46 && q[3] == 8)
+                    ownerRead = true;
+                if (q[0] == 0xb0 && q[1] == 1) booleanSuccess = true;
+                // 二维关系数组：外层每个角色一项，内层记录步长由指令恢复。
+                if (i + 22 <= length && q[0] == 0x48 && q[1] == 0x8b && q[2] == 0x86 &&
+                    q[7] == 0x48 && q[8] == 0x8b && q[9] == 0x0c && q[10] == 0xd8 &&
+                    q[11] == 0x8b && q[12] == 0x44 && q[13] == 0xd8 && q[14] == 8 &&
+                    q[15] == 0x48 && q[16] == 0x6b && q[17] == 0xd0 &&
+                    q[18] == candidate.recordStride && q[19] == 0x48 && q[20] == 0x03 && q[21] == 0xd1) {
+                    std::memcpy(&candidate.arrayOffset,q+3,4);
+                    ++arrays;
+                }
+                // 原版还检查：目标已属于其他角色，或当前角色对应关系处于排除状态。
+                if (i + 20 <= length && q[0] == 0x0f && q[1] == 0xb6 && q[2] == 0x48 &&
+                    q[3] == candidate.stateOffset && q[4] == 0x66 && q[5] == 0x3b && q[6] == 0x78 &&
+                    q[8] == 0x74 && q[10] == 0x80 && q[11] == 0xf9 && q[12] == 2 &&
+                    q[13] == 0xeb && q[15] == 0x80 && q[16] == 0xf9 && q[17] == 3 && q[18] == 0x74) {
+                    candidate.playableOffset = q[7];
+                    ++crossChecks;
+                }
+            }
+            for (DWORD rva = static_cast<DWORD>(reject);
+                rva + 2 <= begin + length && rva < reject + 64; ++rva) {
+                const auto q = image.base + rva;
+                if ((q[0] == 0x32 || q[0] == 0x30) && q[1] == 0xc0) booleanReject = true;
+            }
+            if (!selfAlias || !ownerRead || !booleanSuccess || !booleanReject || arrays != 1 || crossChecks != 1 ||
+                candidate.arrayOffset < 16 || candidate.arrayOffset > 4096 ||
+                candidate.playableOffset + sizeof(std::uint16_t) > candidate.recordStride ||
+                (candidate.stateOffset >= candidate.playableOffset &&
+                 candidate.stateOffset < candidate.playableOffset + sizeof(std::uint16_t))) continue;
+            bool arrayCount = false;
+            for (DWORD i = 0; i + 6 <= length; ++i) {
+                const auto q = code + i;
+                DWORD displacement = 0;
+                if (q[0] == 0x39 && q[1] == 0x86) {
+                    std::memcpy(&displacement,q+2,4);
+                    if (displacement == candidate.arrayOffset + 8) arrayCount = true;
+                }
+            }
+            if (!arrayCount || !supportsPrivateMarriageView(image,begin,length,candidate)) continue;
+            if (matches && target.functionRva == begin) continue;
+            if (++matches > 1) { error = "multiple marriage eligibility functions; refusing ambiguous hook"; return false; }
+            target = candidate;
+        }
+    }
+    if (matches != 1) { error = "marriage eligibility function or layout not found"; return false; }
     error = nullptr;
     return true;
 }

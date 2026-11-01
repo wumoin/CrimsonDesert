@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cwchar>
 #include "ConditionTarget.h"
+#include "MarriageCommit.h"
 
 namespace {
 // 引擎使用 0=满足、1=不满足、2=上下文不可用，不能使用普通 bool 代替。
@@ -27,12 +28,15 @@ wchar_t logPath[MAX_PATH] = {}, iniPath[MAX_PATH] = {};
 struct Settings {
     bool enabled = false;
     LONG requested = 0;
+    bool ignoreExistingMarriageOnCommit = false;
     LONG active() const { return enabled ? requested : 0; }
 };
 
 Settings readSettings() {
     Settings settings;
     settings.enabled = GetPrivateProfileIntW(L"Experiment", L"Enabled", 0, iniPath) != 0;
+    settings.ignoreExistingMarriageOnCommit = GetPrivateProfileIntW(
+        L"Relationships", L"IgnoreExistingMarriageOnCommit", 0, iniPath) != 0;
     for (unsigned i = 0; i < conditionCount; ++i) {
         // 保持旧配置的行为：缺少子开关时只启用同居覆盖，其他条件不动。
         const int fallback = i == static_cast<unsigned>(ConditionKind::LivingTogether) ? 1 : 0;
@@ -158,21 +162,28 @@ DWORD WINAPI run(void*) {
         return 1;
     }
     log("INSTALLED: five condition evaluator wrappers. INI reloads every 5 seconds.");
+    // 提交检查是独立的可选挂钩。定位或安装失败不会强行放行婚姻提交。
+    const bool commitHookReady = InstallMarriageCommitHook(GetModuleHandleW(nullptr),log);
     LONG oldRequested = -1;
     int oldEnabled = -1;
+    int oldCommit = -1;
     for (;;) {
         const auto settings = readSettings();
-        // 一个原子位掩码同时发布总开关与所有子开关，回调不会读取半更新配置。
+        // 五项条件覆盖的总开关与子开关用一个原子位掩码发布。
         InterlockedExchange(&activeConditions, settings.active());
-        if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled) {
-            char message[256];
-            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d",
+        const bool commitActive = settings.enabled && settings.ignoreExistingMarriageOnCommit && commitHookReady;
+        SetMarriageCommitOverride(commitActive);
+        if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled ||
+            static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit) {
+            char message[320];
+            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d IgnoreExistingMarriageOnCommit=%d CommitOverrideActive=%d",
                 settings.enabled, (settings.requested & 1) != 0, (settings.requested & 2) != 0,
                 (settings.requested & 4) != 0, (settings.requested & 8) != 0,
-                (settings.requested & 16) != 0);
+                (settings.requested & 16) != 0, settings.ignoreExistingMarriageOnCommit, commitActive);
             log(message);
             oldRequested = settings.requested;
             oldEnabled = settings.enabled;
+            oldCommit = settings.ignoreExistingMarriageOnCommit;
         }
         Sleep(5000);
     }
