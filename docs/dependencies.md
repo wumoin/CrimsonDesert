@@ -16,4 +16,4 @@
 - [dmm-parser 的 PAPGT 格式实现](https://github.com/exodiaprivate-eng/dmm-parser/blob/main/src/binary/papgt.rs)，用于识别当前签名索引格式；未复制其实现。
 - [Crimson Desert Save Editor](https://github.com/NattKh/CRIMSON-DESERT-SAVE-EDITOR-AND-GAME-MODS)，本地用于解析公开测试存档。本仓库不含其源码或密钥。
 
-游戏二进制、提取资源、第三方存档和原有研究工具克隆都不在本仓库中。插件和输入辅助程序源码为本次实验制作。
+游戏二进制、提取资源、第三方存档和原有研究工具克隆都不在本仓库中。插件源码为本次实验制作；测试用输入辅助程序已从当前版本删除。

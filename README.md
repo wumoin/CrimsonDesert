@@ -33,9 +33,10 @@
 
 - 已编译插件，并在本机游戏中通过版本、RTTI、函数字节和原虚函数槽检查。
 - 已挂载插件、进入游戏场景，并切换 `Enabled=0/1`。
-- 实际游戏流程中记录到至少 200 次原函数返回“没有同居对象”，没有记录到不可用或未知返回。开关开启期间也记录到了有效调用。
+- 清理前的诊断版本在实际游戏流程中记录到至少 200 次原函数返回“没有同居对象”，没有记录到不可用或未知返回。开关开启期间也记录到了有效调用。
 - **没有取得“已有同居对象”的实际返回，也没有完成第二次结婚、婚礼、保存重载或离婚验证。** 因此尚未在实机中验证最关键的 `0 → 1` 分支。
-- 结果映射自检覆盖了全部 256 种字节值和两种开关状态，共 512 项；这只验证映射规则，不能替代婚姻功能验证。
+
+当前源码已移除测试用输入工具、启动时的结果映射自检和调用计数，只保留补丁功能、版本校验、加载结果及开关状态日志。历史诊断记录保留在文档与日志摘录中。
 
 详细记录见 [验证记录](docs/validation.md)，实现位置见 [源码](src/CohabitationGateExperiment.cpp)。
 
@@ -47,7 +48,6 @@ config/                      默认关闭的 INI
 build.cmd                    构建入口；不会安装或启动游戏
 docs/                        原理、版本依据、验证范围
 evidence/                    本次实验的插件日志摘录
-tools/input-helper/          测试用长按辅助程序源码，不是 Mod 依赖
 ```
 
 仓库不包含游戏提取资源、第三方存档、存档密钥、解包器源码或 ASI Loader 二进制。
@@ -113,12 +113,12 @@ Enabled=1
 启动后查看游戏 `bin64` 中生成的 `CohabitationGateExperiment.log`，留意本次启动对应的记录：
 
 ```text
-PASS: build/RTTI/evaluator/slot fingerprints and 512 result mapping checks.
+PASS: build/RTTI/evaluator/slot fingerprints.
 INSTALLED: HasLivingTogether evaluator wrapper. Enabled reloads from INI every 5 seconds.
-STATUS Enabled=1 calls(original satisfied/unsatisfied/unavailable)=... unexpected=0
+STATUS Enabled=1
 ```
 
-`INSTALLED` 表示挂钩已安装，`Enabled=1` 表示配置已开启。调用计数增加表示游戏实际评估过该条件，不能单独证明多配偶成功。日志也可能混有启动器或子进程的拒绝加载记录，需结合本次主游戏的 `PASS` / `INSTALLED` 判断。
+`INSTALLED` 表示挂钩已安装，`Enabled=1` 表示配置已开启；两者不能单独证明多配偶成功。当前版本不再记录每次条件调用的计数。日志也可能混有启动器或子进程的拒绝加载记录，需结合本次主游戏的 `PASS` / `INSTALLED` 判断。
 
 如果没有生成日志，先检查文件是否放在正确的 `bin64`、ASI Loader 是否加载了插件。如果主游戏版本检查不通过，当前补丁不能用于该版本。
 
