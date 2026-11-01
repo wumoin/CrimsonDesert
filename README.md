@@ -55,11 +55,8 @@ GitHub 自动生成的 `Source code` 压缩包只包含源码，不能代替 `.a
 
 ### 3. 安装加载器和补丁
 
-首次安装时，将本 Release 附带的 **`winmm.dll`** 放到 `CrimsonDesert.exe` 同目录。它是第三方 ASI 加载器，不是从 Windows 系统目录复制的 DLL；无需替换系统文件。附件与 [Ultimate ASI Loader v10.0.2 官方 x64 包](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/tag/v10.0.2)中的 `dinput8.dll` 内容一致，仅按官方支持的代理名称改为 `winmm.dll`。也可自行从上游获取加载器，安装方式参见[官方说明](https://github.com/ThirteenAG/Ultimate-ASI-Loader#installation)。
 
-已有加载器时确认它能加载本插件，保留原有配置，避免直接覆盖其他 Mod 所需的同名文件。
-
-把插件和 INI 放到游戏的 `bin64` 目录。首次安装所需文件如下，盘符和 Steam 库路径以自己的安装位置为准：
+把`.ass` `.dll`插件和 INI 放到游戏的 `bin64` 目录。首次安装所需文件如下，盘符和 Steam 库路径以自己的安装位置为准：
 
 ```text
 Crimson Desert/
