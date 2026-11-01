@@ -65,12 +65,7 @@ Crimson Desert/
     └── CohabitationGateExperiment.ini
 ```
 
-
-### 4. 开启需要的功能
-
-发布附件已默认开启全部功能，`PreferredPartnerKey=0` 保持自动选择伴侣。需要关闭某项功能时，将对应开关设为 `0`。
-
-更新旧版本时，完整退出游戏后替换 `.asi`，并在现有 INI 中补齐新增选项。
+随后启动游戏就行了，如需开启或关闭某些功能，可查看配置说明对`CohabitationGateExperiment.ini`进行修改
 
 ## 配置说明
 
