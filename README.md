@@ -39,9 +39,7 @@
 
 - [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/CohabitationGateExperiment.asi)：插件。
 - [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/CohabitationGateExperiment.ini)：配置。
-- [MinHook-LICENSE.txt](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/MinHook-LICENSE.txt)：依赖许可证，分发插件时需保留。
 - [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2。
-- [Ultimate-ASI-Loader-LICENSE.txt](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/Ultimate-ASI-Loader-LICENSE.txt)：加载器的 MIT 许可证，分发加载器时需保留。
 
 GitHub 自动生成的 `Source code` 压缩包只包含源码，不能代替 `.asi` 附件。当前版本标记为预发布，请从上面的版本页面或所有版本页面下载。
 
@@ -61,7 +59,7 @@ GitHub 自动生成的 `Source code` 压缩包只包含源码，不能代替 `.a
 
 已有加载器时确认它能加载本插件，保留原有配置，避免直接覆盖其他 Mod 所需的同名文件。
 
-把插件、INI 和许可证放到游戏的 `bin64` 目录。首次安装的完整布局如下，盘符和 Steam 库路径以自己的安装位置为准：
+把插件和 INI 放到游戏的 `bin64` 目录。首次安装所需文件如下，盘符和 Steam 库路径以自己的安装位置为准：
 
 ```text
 Crimson Desert/
@@ -69,9 +67,7 @@ Crimson Desert/
     ├── CrimsonDesert.exe
     ├── winmm.dll
     ├── CohabitationGateExperiment.asi
-    ├── CohabitationGateExperiment.ini
-    ├── MinHook-LICENSE.txt
-    └── Ultimate-ASI-Loader-LICENSE.txt
+    └── CohabitationGateExperiment.ini
 ```
 
 本文使用上述同目录布局。插件总是读取**与自身 `.asi` 同目录、同名的 `.ini`**，日志也写在这里；修改源码仓库里的配置不会自动影响已安装的插件。
