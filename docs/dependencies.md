@@ -3,7 +3,8 @@
 ## Mod 运行
 
 - Windows x64 与当前适配的游戏版本。
-- [ThirteenAG Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader)，研究时使用官方发布的 x64 `winmm.dll`。本仓库不包含该 DLL 或其源码；安装时从官方来源获取并遵守其 MIT 许可证。
+- [ThirteenAG Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) v10.0.2。Release 附带官方 x64 包中的加载器，使用官方支持的 `winmm.dll` 名称，附带 `Ultimate-ASI-Loader-LICENSE.txt`（MIT）。源码仓库不跟踪该 DLL 或其源码，构建脚本不生成它。
+- 加载器来自 [v10.0.2 官方发布](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/tag/v10.0.2)的 `Ultimate-ASI-Loader_x64.zip`；附件与压缩包中的 `dinput8.dll` 内容一致，仅更改文件名。SHA-256：`fa2b9bd317bb597906bc2c4cc2008c1444e50bfdc367e648d18f36f015812e27`。
 
 ## 编译
 
