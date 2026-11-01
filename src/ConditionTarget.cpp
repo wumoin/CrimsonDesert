@@ -735,3 +735,217 @@ bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, cons
     error = nullptr;
     return true;
 }
+
+namespace {
+bool codeHas(const Image& image, DWORD begin, DWORD length, const unsigned char* needle, std::size_t size) {
+    return length >= size && std::search(image.base + begin, image.base + begin + length, needle, needle + size) != image.base + begin + length;
+}
+std::vector<std::pair<DWORD, DWORD>> callsIn(const Image& image, DWORD begin, DWORD length) {
+    std::vector<std::pair<DWORD, DWORD>> calls;
+    for (DWORD at = 0; at < length;) {
+        hde64s ins{}; unsigned char bytes[16]{};
+        std::memcpy(bytes, image.base + begin + at, (std::min)(DWORD{15}, length - at));
+        const auto size = hde64_disasm(bytes, &ins);
+        if (!size || ins.flags & F_ERROR || size > length - at) break;
+        if (ins.opcode == 0xe8) {
+            const auto dest = static_cast<std::int64_t>(begin) + at + size + static_cast<std::int32_t>(ins.imm.imm32);
+            if (dest > 0 && dest < image.size && image.contains(static_cast<DWORD>(dest), 1, true))
+                calls.push_back({begin + at, static_cast<DWORD>(dest)});
+        }
+        if (ins.opcode == 0xc3) break; // 后面的跳转表不是指令。
+        at += size;
+    }
+    return calls;
+}
+// 请求类型的主虚表由 RTTI 识别；这里只接受已验证的三参数请求处理方法布局。
+bool requestHandler(const Image& image, const char* name, NativeRequestHandler& handler) {
+    const auto size = std::strlen(name) + 1;
+    std::vector<DWORD> types, cols;
+    for (const auto& span : image.spans) {
+        auto at = span.begin;
+        while (at < span.end && size <= span.end - at) {
+            auto hit = static_cast<const unsigned char*>(std::memchr(image.base + at, '.', span.end - at - size + 1));
+            if (!hit) break; at = static_cast<DWORD>(hit - image.base) + 1;
+            if (at > 16 && !std::memcmp(hit, name, size)) types.push_back(at - 17);
+        }
+    }
+    for (const auto& span : image.spans) for (std::uint64_t at = (span.begin + 3ull) & ~3ull; at + sizeof(Locator) <= span.end; at += 4) {
+        Locator col{}; std::memcpy(&col, image.base + at, sizeof(col));
+        if (col.signature == 1 && !col.offset && !col.constructorOffset && col.self == at &&
+            std::find(types.begin(), types.end(), col.type) != types.end()) cols.push_back(static_cast<DWORD>(at));
+    }
+    unsigned matches = 0;
+    for (const auto& span : image.spans) for (std::uint64_t at = (span.begin + 7ull) & ~7ull; at + 32 <= span.end; at += 8) {
+        std::uintptr_t ptr = 0, method = 0; DWORD colRva = 0, rva = 0, length = 0;
+        std::memcpy(&ptr, image.base + at, 8);
+        if (!image.pointerRva(ptr, colRva) || std::find(cols.begin(), cols.end(), colRva) == cols.end()) continue;
+        if (!image.read(static_cast<DWORD>(at + 24), method) || !image.pointerRva(method, rva) || !image.functionSize(rva, length)) continue;
+        // 请求上下文的包地址、长度，以及包头长度校验均须出现。
+        bool payload = false, sizeCheck = false;
+        for (DWORD i = 0; i + 4 <= (std::min)(length, DWORD{128}); ++i) {
+            const auto q = image.base + rva + i;
+            if ((q[0] == 0x49 || q[0] == 0x4d) && q[1] == 0x8b && (q[2] & 0xc7) == 0x40 && q[3] == 0x18) payload = true;
+            if (i + 4 <= length && q[0] == 0x48 && q[1] == 0x83 && (q[2] & 0xf8) == 0xe8 && q[3] == 5) sizeCheck = true;
+        }
+        if (!payload || !sizeCheck) continue;
+        handler = reinterpret_cast<NativeRequestHandler>(method); ++matches;
+    }
+    return matches == 1;
+}
+}
+
+bool FindPartnerRuntimeTarget(HMODULE module, MarriageCommitTarget& target, const char*& error) {
+    Image image; auto& rt = target.runtime; rt = {};
+    if (!image.open(module) || !target.spawnControl) { error = "native spawn controller unavailable"; return false; }
+    DWORD length = 0;
+    if (!image.functionSize(target.spawnRva, length)) return false;
+    unsigned registries = 0, creators = 0, contents = 0;
+    for (DWORD i = 0; i + 16 <= length; ++i) {
+        const auto q = image.base + target.spawnRva + i;
+        if (q[0] == 0x48 && q[1] == 0x8b && q[2] == 0x0d && q[7] == 0x48 && q[8] == 0x8b && q[9] == 0x49 && q[11] == 0xe8) {
+            std::int32_t relative = 0, call = 0; std::memcpy(&relative, q + 3, 4); std::memcpy(&call, q + 12, 4);
+            const auto slot = static_cast<std::int64_t>(target.spawnRva) + i + 7 + relative;
+            const auto lookup = static_cast<std::int64_t>(target.spawnRva) + i + 16 + call;
+            DWORD lookupLength = 0;
+            if (slot < 0 || slot >= image.size || !image.contains(static_cast<DWORD>(slot), 8) || lookup < 0 || lookup >= image.size ||
+                !image.functionSize(static_cast<DWORD>(lookup), lookupLength)) continue;
+            const auto bytes = image.base + lookup;
+            constexpr unsigned char mask[] = {0x41,0x81,0xe0,0xff,0xff,0x0f,0};
+            if (!codeHas(image, static_cast<DWORD>(lookup), lookupLength, mask, sizeof(mask))) continue;
+            unsigned fields = 0;
+            for (DWORD j = 0; j + 7 <= lookupLength; ++j) {
+                const auto p = bytes + j;
+                if (p[0] == 0x8b && p[1] == 0x8e) { std::memcpy(&rt.bucketCountOffset, p + 2, 4); ++fields; }
+                if (p[0] == 0x4c && p[1] == 0x03 && p[2] == 0x96) { std::memcpy(&rt.bucketsOffset, p + 3, 4); ++fields; }
+                if (p[0] == 0x48 && p[1] == 0x8b && p[2] == 0x86) { std::memcpy(&rt.entriesOffset, p + 3, 4); ++fields; }
+            }
+            if (fields != 3 || rt.bucketCountOffset > 4096 || rt.bucketsOffset > 4096 || rt.entriesOffset > 4096) continue;
+            rt.worldSlot = reinterpret_cast<void**>(image.base + slot); rt.managerOffset = q[10];
+            ++registries;
+        }
+        if (q[0] == 0x48 && q[1] == 0x8b && q[2] == 0x89) {
+            unsigned offset = 0; std::memcpy(&offset, q + 3, 4);
+            if (offset == target.arrayOffset) continue;
+            // 控制器早期从 owner 的组件表取回公共关系组件。
+            if (i < 96 && offset > 0 && offset < 4096) { rt.contentsComponentOffset = offset; ++contents; }
+        }
+        if (!rt.unavailableResult || rt.unavailableResult == MAXDWORD) if (q[0] == 0x8b && q[1] == 5) {
+            std::int32_t rel = 0; std::memcpy(&rel, q + 2, 4);
+            const auto value = static_cast<std::int64_t>(target.spawnRva) + i + 6 + rel;
+            if (value > 0 && value < image.size) image.read(static_cast<DWORD>(value), rt.unavailableResult);
+        }
+    }
+    for (const auto& call : callsIn(image, target.spawnRva, length)) {
+        DWORD size = 0; if (!image.functionSize(call.second, size)) continue;
+        const auto code = image.base + call.second;
+        constexpr unsigned char head[] = {0x48,0x8b,0xc4,0x48,0x89,0x58,0x18,0x4c,0x89,0x48,0x20,0x48,0x89,0x50,0x10};
+        if (size < sizeof(head) || std::memcmp(code, head, sizeof(head))) continue;
+        unsigned ownerFields = 0;
+        for (DWORD j = 0; j + 20 <= size; ++j) {
+            const auto p = code + j;
+            if (p[0] == 0x66 && p[1] == 0x89 && p[2] == 0xb1 && p[7] == 0x48 && p[8] == 0x8b &&
+                p[9] == 0x45 && p[11] == 0x8b && p[12] == 0x40 && p[14] == 0x89 && p[15] == 0x81) {
+                std::memcpy(&rt.companionPlayableOffset, p + 3, 4); rt.actorIdOffset = p[13];
+                std::memcpy(&rt.companionOwnerOffset, p + 16, 4); ++ownerFields;
+            }
+        }
+        if (ownerFields != 1 || rt.companionOwnerOffset > 4096 || rt.companionPlayableOffset > 4096 || !rt.actorIdOffset) continue;
+        rt.create = reinterpret_cast<NativePartnerCreate>(image.base + call.second); ++creators;
+    }
+    if (registries != 1 || creators != 1 || contents != 1) { error = "actor registry or creation layout incompatible"; rt = {}; return false; }
+    // 某些错误标识由游戏启动时初始化，离线映像里可能仍为 0；拒绝路径不能误报成功。
+    if(!rt.unavailableResult)rt.unavailableResult=MAXDWORD;
+
+    // 先找到按键离婚的真实写入函数，再以调用关系定位公共离婚入口，避免固定 RVA。
+    DWORD byKey = 0; unsigned byKeys = 0, divorces = 0;
+    constexpr unsigned char divorced[] = {0xc6,0x43,0x2c,0x03};
+    for (const auto& span : image.spans) if (span.executable) {
+        for (DWORD at = span.begin; at + sizeof(divorced) <= span.end; ++at) {
+            if (std::memcmp(image.base + at, divorced, sizeof(divorced))) continue;
+            DWORD begin = 0, size = 0; if (!image.functionRange(at, begin, size)) continue;
+            constexpr unsigned char args[] = {0x4c,0x89,0x4c,0x24,0x20,0x48,0x89,0x54,0x24,0x10,0x48,0x89,0x4c,0x24,0x08};
+            if (size < sizeof(args) || std::memcmp(image.base + begin, args, sizeof(args))) continue;
+            if (byKey != begin) { byKey = begin; ++byKeys; }
+        }
+    }
+    if (byKeys != 1) { error = "keyed divorce writer not unique"; return false; }
+    for (const auto& span : image.spans) if (span.executable) {
+        auto at = span.begin;
+        while (at + 5 <= span.end) {
+            auto hit = static_cast<const unsigned char*>(std::memchr(image.base + at, 0xe8, span.end - at - 4));
+            if (!hit) break; at = static_cast<DWORD>(hit - image.base) + 1;
+            std::int32_t rel = 0; std::memcpy(&rel, hit + 1, 4);
+            if (static_cast<std::int64_t>(at) + 4 + rel != target.lookupRva) continue;
+            DWORD begin = 0, size = 0; if (!image.functionRange(at - 1, begin, size)) continue;
+            const auto calls = callsIn(image, begin, size);
+            const auto keyedCall=std::find_if(calls.begin(),calls.end(),[&](const auto& call){return call.second==byKey;});
+            if(keyedCall==calls.end())continue;
+            DWORD auditEnd=0;
+            constexpr unsigned char reuseR14[]={0x41,0xbe,1,0,0,0};
+            for(DWORD j=keyedCall->first+5-begin;j+sizeof(reuseR14)<=size;++j)
+                if(!std::memcmp(image.base+begin+j,reuseR14,sizeof(reuseR14))){auditEnd=j;break;}
+            if(!auditEnd)continue;
+            DWORD successAt=0;
+            const DWORD callReturn=keyedCall->first+5-begin;
+            for(DWORD j=callReturn;j+8<size && j<callReturn+24;++j) {
+                const auto p=image.base+begin+j;
+                if(p[0]!=0x85 || p[1]!=0xc0)continue;
+                std::int64_t destination=-1;
+                if(p[2]==0x74)destination=static_cast<std::int64_t>(j)+4+static_cast<std::int8_t>(p[3]);
+                else if(p[2]==0x0f && p[3]==0x84){std::int32_t branch=0;std::memcpy(&branch,p+4,4);destination=static_cast<std::int64_t>(j)+8+branch;}
+                if(destination>callReturn && destination<auditEnd){successAt=static_cast<DWORD>(destination);break;}
+            }
+            if(!successAt)continue;
+            // R14 保存的查询记录在删除后仍用于通知。只允许对该记录读取的函数族。
+            DWORD auditBegin=0;
+            constexpr unsigned char readKey[]={0x41,0x8b,0x06};
+            for(DWORD j=at+4-begin;j+sizeof(readKey)<=keyedCall->first-begin;++j)
+                if(!std::memcmp(image.base+begin+j,readKey,sizeof(readKey))){auditBegin=j;break;}
+            if(!auditBegin)continue;
+            bool readonly = true;
+            for (DWORD j = auditBegin; j < auditEnd;) {
+                // 失败分支会把 R14 改作原生 Actor 引用并退出，不再读取关系记录。
+                // 分别审核删除前及成功通知分支，不能把失败分支的寄存器复用当成写关系。
+                if(j==callReturn){j=successAt;continue;}
+                hde64s ins{}; unsigned char bytes[16]{}; std::memcpy(bytes, image.base + begin + j, (std::min)(DWORD{15}, size - j));
+                auto n = hde64_disasm(bytes, &ins);
+                if (!n || (ins.flags & F_ERROR) || n > size - j) { readonly = false; break; }
+                if(ins.flags&F_MODRM) {
+                    const unsigned reg=ins.modrm_reg+(ins.rex_r?8u:0u),rm=ins.modrm_rm+(ins.rex_b?8u:0u);
+                    if(ins.modrm_mod==3 && (reg==14 || rm==14) && (ins.opcode==0x8b || ins.opcode==0x89))readonly=false;
+                    if(ins.modrm_mod!=3 && rm==14) {
+                        const unsigned width=ins.opcode==0x0f && ins.opcode2==0xb6 ? 1u :
+                            (ins.opcode==0x0f && ins.opcode2==0xb7 ? 2u : (ins.rex_w?8u:4u));
+                        std::int64_t offset=0;
+                        if(ins.flags&F_DISP8)offset=static_cast<std::int8_t>(ins.disp.disp8);
+                        else if(ins.flags&F_DISP32)offset=static_cast<std::int32_t>(ins.disp.disp32);
+                        if((ins.opcode!=0x8b && !(ins.opcode==0x0f && (ins.opcode2==0xb6 || ins.opcode2==0xb7))) ||
+                            offset<0 || offset+width>target.recordStride)readonly=false;
+                    }
+                }
+                if (ins.opcode == 0xc3) break; j += n;
+            }
+            if (!readonly) continue;
+            if (rt.divorceRva == begin) continue;
+            rt.divorceRva = begin; rt.divorceCurrent = image.base + begin; rt.divorceLookupReturn = image.base + at + 4; ++divorces;
+        }
+    }
+    rt.divorceByKey = reinterpret_cast<NativeDivorceByKey>(image.base + byKey);
+    // 只解析离婚入口传给伴侣查询的角色索引读取，不把 NPC 模板等其他 WORD 字段混入。
+    unsigned indexFields = 0; DWORD returnRva=0;
+    if(image.pointerRva(reinterpret_cast<std::uintptr_t>(rt.divorceLookupReturn),returnRva) && returnRva>=32)
+        for(DWORD i=returnRva-32;i+4<=returnRva-5;++i) {
+            const auto q=image.base+i;
+            if(q[0]==0x0f && q[1]==0xb7 && q[2]==0x52 && q[3]<0x80){rt.playableIndexOffset=q[3];++indexFields;}
+        }
+    if (divorces != 1) { error = "current-partner divorce caller not unique or not read-only"; return false; }
+    if (indexFields!=1 || !rt.playableIndexOffset) { error = "player index field not unique"; return false; }
+    struct Request { const char* name; NativeRequestHandler* destination; const char* reason; };
+    const Request requests[]={
+        {".?AVTrocTrInteractionDoStepReq@pa@@",&rt.stepRequest,"interaction step request incompatible"},
+        {".?AVTrocTrInteractionResetReq@pa@@",&rt.resetRequest,"interaction reset request incompatible"},
+        {".?AVTrocTrQuestDialogEndReq@pa@@",&rt.dialogueEndRequest,"dialogue end request incompatible"}
+    };
+    for(const auto& request:requests)if(!requestHandler(image,request.name,*request.destination)){error=request.reason;return false;}
+    error = nullptr; return true;
+}

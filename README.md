@@ -2,9 +2,11 @@
 
 为《Crimson Desert》提供可配置的恋爱与婚姻条件覆盖，支持继续与其他对象结婚、选择当前伴侣，以及实验性的全员召唤 / 收回。Windows x64 ASI 插件，配置和源码注释为中文。
 
-**当前为实验版本。** 已在用户存档中确认同一角色保存四条已婚记录；多人同时出场、跟随、婚礼对象正确性、读档后的完整互动及离婚尚未完成实机验证。
+**当前为实验版本。** 已确认多条婚姻可以保存；v0.1.1 实机回归确认两位伴侣同时出场，以及一次指定对象离婚后其他关系保留。完整婚礼、跟随、剧情和所有 NPC 的交互仍未完成验证。
 
-[下载 v0.1.0](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.0) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
+[下载 v0.1.1](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.1) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
+
+当前源码为 **v0.1.1 修复版**，新增实例复用、重复实例收回及按交互目标离婚保护。旧 v0.1.0 附件不包含这些修复，使用时以加载日志首行版本为准。修复的范围与验证步骤见[本轮修复说明](docs/fixes-v0.1.1.md)。
 
 ## 功能
 
@@ -33,13 +35,13 @@
 
 ### 1. 下载发布文件
 
-打开 [v0.1.0 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.0)，下载附件：
+打开 [v0.1.1 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.1)，下载附件：
 
-- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.0/CohabitationGateExperiment.asi)：插件。
-- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.0/CohabitationGateExperiment.ini)：配置。
-- [MinHook-LICENSE.txt](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.0/MinHook-LICENSE.txt)：依赖许可证，分发插件时需保留。
-- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.0/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2。
-- [Ultimate-ASI-Loader-LICENSE.txt](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.0/Ultimate-ASI-Loader-LICENSE.txt)：加载器的 MIT 许可证，分发加载器时需保留。
+- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/CohabitationGateExperiment.asi)：插件。
+- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/CohabitationGateExperiment.ini)：配置。
+- [MinHook-LICENSE.txt](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/MinHook-LICENSE.txt)：依赖许可证，分发插件时需保留。
+- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2。
+- [Ultimate-ASI-Loader-LICENSE.txt](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/Ultimate-ASI-Loader-LICENSE.txt)：加载器的 MIT 许可证，分发加载器时需保留。
 
 GitHub 自动生成的 `Source code` 压缩包只包含源码，不能代替 `.asi` 附件。当前版本标记为预发布，请从上面的版本页面或所有版本页面下载。
 
@@ -174,7 +176,7 @@ SpawnAllPartners=1
 
 保持 `Enabled=1`，并确认日志显示 `SpawnAllActive=1`。此项可独立于 `IgnoreExistingMarriageOnCommit` 开启，只处理已存在的婚姻记录。
 
-修改后不会立即生成其他人。先在婚礼 CG 结束后的同居 / 召唤场景，执行一次原版收回后再召唤，或重新进入会触发原版出场的场景。当前对象动作成功后，插件才会对其余已婚对象逐个执行同样动作；不会为未婚对象创建关系。
+修改后不会立即生成其他人。先在婚礼 CG 结束后的同居 / 召唤场景，执行一次原版收回后再召唤，或重新进入会触发原版出场的场景。v0.1.1 会分别核对每位已婚对象的真实实例，复用已有角色、收回重复副本，让原版创建缺少的角色；一位对象失败不会跳过其余对象，不会为未婚对象创建关系。
 
 位置、碰撞、跟随、场景人数限制和实际渲染尚未完成实机验证。该入口可能被剧情复用，婚礼或其他剧情期间可先关闭此项。关闭选项本身不会立即收回已经出场的角色；如需收回全员，应在仍开启时先执行原版收回。
 
@@ -189,6 +191,16 @@ SpawnAllPartners=1
 
 成功对话、播放 CG、关系保存和实际出场分别发生在不同环节，不能只凭其中一个现象认定完整多伴侣流程已经成功。
 
+### 离婚对象保护（v0.1.1）
+
+保持 `Enabled=1` 且日志显示 `RelationshipGuardsActive=1`。此保护不要求开启 `IgnoreExistingMarriageOnCommit`，也不新增配置项。
+
+正常交互已经携带对象编号的离婚路径会保留这个编号，不用 `PreferredPartnerKey` 替代，并先处理该对象的额外副本。日志为 `DIVORCE REQUEST` / `DIVORCE RESULT`。
+
+对没有携带对象编号的旧“当前伴侣”离婚入口，更新或读档后需重新进入目标伴侣的交互，让插件核验请求中的玩家 / NPC 两端和真实已婚记录；不接受最近新婚或第一位伴侣回退。该入口删除数组后还会读取旧位置生成通知，插件用本次真实记录的独立快照避免通知对象错位，日志为 `DIVORCE TARGET`。
+
+若出现 `DIVORCE BLOCKED`，说明目标或副本清理尚未核验，操作被停止。退出并重新进入正确伴侣的交互，查看相关目标日志，不要通过关闭保护来尝试删除。正常按编号路径已有一例实机保存回归；旧入口及所有 NPC 的完整离婚行为仍需验证，详见修复说明。
+
 ## 日志与排错
 
 日志文件为插件旁边的 `CohabitationGateExperiment.log`，持续追加，包含时间和进程 ID（PID）。多个进程加载 ASI 时可能写入同一文件，应按**同一 PID 的本次启动记录**判断结果。
@@ -202,11 +214,11 @@ SpawnAllPartners=1
 | `STATUS Enabled=1 ...` | 已读取总开关和各子开关；状态通常只在启动或设置变化时输出 |
 | `CommitOverrideActive=1` | 婚姻提交覆盖及当前伴侣选择已实际启用 |
 | `SpawnAllActive=1` | 全员召唤 / 收回扩展已实际启用 |
+| `RelationshipGuardsActive=1` | 原生创建去重和离婚目标保护已启用 |
 | `REFUSED` | 条件定位或安装失败，该进程没有启用条件覆盖；原因见同一行 |
-| `COMMIT HOOK UNAVAILABLE` | 提交与伴侣选择挂钩不可用；已安装的五项条件覆盖仍可运行 |
-| `PARTNER SPAWN HOOK UNAVAILABLE` | 出场扩展不可用；其他已安装功能仍可运行 |
+| `COMMIT HOOK UNAVAILABLE` | 提交、对象路由及实例 / 离婚保护未成套安装；五项条件覆盖仍可运行 |
 
-INI 中请求 `1` 不等于已经成功安装。五项条件必须全部定位、安装成功，之后才尝试提交与出场挂钩；出场挂钩单独失败不会关闭已安装的其他功能。单纯修改配置不会重新尝试失败的定位，更新兼容版本后需重启游戏。
+INI 中请求 `1` 不等于已经成功安装。五项条件必须全部定位、安装成功，之后才尝试原生挂钩。v0.1.1 要求提交、对象路由、创建 / 出场与交互 / 离婚保护成套兼容并安装，避免只装对象偏好而缺少删除保护。失败时保留五项条件覆盖。单纯修改配置不会重新尝试失败的定位，更新兼容版本后需重启游戏。
 
 ### 判断婚姻提交和对象选择
 
@@ -225,14 +237,17 @@ INI 中请求 `1` 不等于已经成功安装。五项条件必须全部定位�
 
 ```text
 [pid=...] STATUS ... SpawnAllPartners=1 SpawnAllActive=1
-[pid=...] PARTNER ACTION: spawn=1 ... marriedRecords=4 extrasAttempted=3 extrasAccepted=3; primary result preserved.
+[pid=...] PARTNER INSTANCE: key=... spawn=1 before=2 after=1 removedRequests=1 pending=0 verified=1 result=0x00000000
+[pid=...] PARTNER ACTION: spawn=1 ... marriedRecords=3 extrasAttempted=2 extrasAccepted=2 verified=3 pending=0; instance registry checked.
 ```
 
 - `spawn=1` 为召唤，`spawn=0` 为收回。
 - `marriedRecords` 是当次获取的真实已婚记录数。
 - `extrasAttempted` 是除当前对象外尝试处理的数量。
 - `extrasAccepted` 只表示额外原版调用返回成功，不保证角色已渲染或所有后续回调完成。
-- `PARTNER ACTION EXTRA FAILED` 提供失败对象编号和原版结果码。额外对象失败时继续处理其余对象，保留当前对象原本的结果。
+- `PARTNER INSTANCE` 记录每个对象的实例核对：`before/after` 为注册表中的实例数，`verified=1` 表示当次已确认所需的唯一实例或全部收回状态。
+- `pending=1` 表示已请求原版收回，但实例尚未从注册表消失。等待原版生命周期完成，不能据此认定已收回，也不会在此期间复用正在移除的实例。
+- `PARTNER REUSE` 表示原版创建入口复用了已验证实例，没有再创建一份。创建和收回仍可能受场景或剧情限制。
 
 ### 常见问题
 
@@ -264,7 +279,7 @@ INI 中请求 `1` 不等于已经成功安装。五项条件必须全部定位�
 
 1. **条件判断**：通过 MSVC RTTI 查找五类条件的虚函数表，解析实际评估槽，再替换进程内入口。保留上下文不可用和未知返回值。
 2. **婚姻提交与当前对象**：用 MinHook 挂钩原资格检查。仅在原检查失败、且开启对应选项时，构造排除当前角色已有婚姻的私有副本重新检查；不改原关系数组。跟踪真实写入路径，并且只选择已存在的真实已婚记录。
-3. **出场扩展**：当前对象的原版召唤 / 收回成功后，临时逐个选择其他真实已婚对象，在原游戏线程中调用同一原版动作，保留主动作的结果。
+3. **出场与离婚保护**：读取当前玩家的角色注册表，按对象键、所属角色和实例核对出场。在原游戏调用线程中修复运行时实例关联，调用原版动作并保留原生回执；离婚使用明确交互目标及独立记录快照。实例关联字段会改变，婚姻状态仍交给原版写入。
 
 好感 / 亲密度覆盖使用虚拟等级 `127` 重新计算原来的比较，保留 `>=`、`<` 等方向，避免成功与拒绝分支同时成立。它不会增加实际数值，也不是让所有比较无条件成立，例如“等级恰好等于 3”仍不成立。
 
@@ -279,7 +294,8 @@ INI 中请求 `1` 不等于已经成功安装。五项条件必须全部定位�
 | 自动定位与条件覆盖逻辑 | 在 1.0.0.3462 上完成离线映射；虚表移动 / 槽位变化、缺失 / 重复目标、等级比较与配置组合均有离线验证 |
 | 运行中加载与条件挂钩 | 用户日志确认五项条件安装，以及提交 / 对象选择路径运行 |
 | 多条婚姻写入并保存 | 用户进度的同一角色同时保存四条状态为已婚的记录，原伴侣记录保留 |
-| 全员召唤 / 收回实现 | 离线模型验证逐对象调用、关系过滤、递归抑制及失败处理；尚未实机确认全员同时出现 |
+| 全员召唤 / 收回实现 | 运行时核验三位逐一收回 / 生成；加载两位伴侣存档后各生成一份，用户确认画面两人；缺失 / 重复实例和异步移除另有模型验证 |
+| v0.1.1 实例与离婚修复 | 模型覆盖缺失 / 重复实例、异步收回、主失败、“指定 A、偏好 B、删除换位”；正常按键离婚一例经存档及用户确认，旧公共入口主要为模型验证 |
 | 完整多伴侣玩法 | 婚礼对象、位置、碰撞、跟随、场景人数限制、读档后交互与离婚仍需验证 |
 
 256 种总开关 / 条件 / 提交 / 出场配置组合已通过离线验证。离线模型与真实保存证据的具体范围见 [验证记录](docs/validation.md)；不能把挂钩安装成功或原生调用返回成功当作完整玩法已经验证。

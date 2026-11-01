@@ -25,8 +25,15 @@ MarriageCommitTarget installedTarget{};
 MarriageEligibility originalEligibility = nullptr;
 LivingPartnerLookup originalLookup = nullptr;
 PartnerSpawnControl originalSpawnControl = nullptr;
+NativePartnerCreate originalPartnerCreate = nullptr;
+NativeDivorceCurrent originalDivorceCurrent = nullptr;
+NativeDivorceByKey originalDivorceByKey = nullptr;
+NativeRequestHandler originalStepRequest = nullptr;
+NativeRequestHandler originalResetRequest = nullptr, originalDialogueEndRequest = nullptr;
 bool spawnHookReady = false;
+bool runtimeHookReady = false;
 volatile LONG spawnAllEnabled = 0;
+volatile LONG relationshipGuardsEnabled = 0;
 PluginLog logger = nullptr;
 volatile LONG enabled = 0;
 volatile LONG reported = 0;
@@ -54,6 +61,16 @@ struct SpawnRouteScope {
     explicit SpawnRouteScope(SpawnRoute& route):previous(spawnRoute){spawnRoute=&route;}
     ~SpawnRouteScope(){spawnRoute=previous;}
 };
+struct InteractionTarget { std::uintptr_t owner = 0; DWORD ownerId = 0, key = 0, actorId = 0; };
+InteractionTarget interactionTargets[64]{};
+SRWLOCK interactionLock = SRWLOCK_INIT;
+struct DivorceRoute {
+    void* component;
+    std::uint16_t playable;
+    DWORD key;
+    alignas(16) std::uint8_t snapshot[128]{};
+};
+thread_local DivorceRoute* divorceRoute = nullptr;
 
 bool copyReadable(void* destination, const void* source, std::size_t length) {
     SIZE_T copied = 0;
@@ -212,14 +229,191 @@ bool __fastcall replacementEligibility(void* component, std::uint16_t playable, 
     return accepted;
 }
 
+bool interactionOwner(void* requestContext, std::uintptr_t& owner, DWORD& ownerId, void*& contents, std::uint16_t& playable) {
+    std::uintptr_t components = 0, status = 0, cache = 0;
+    const auto& layout = installedTarget;
+    if (!copyReadable(&owner, requestContext, 8) || !owner ||
+        !copyReadable(&ownerId, reinterpret_cast<void*>(owner + layout.runtime.actorIdOffset), 4) ||
+        !copyReadable(&components, reinterpret_cast<void*>(owner + layout.npcKeyOffsets[0]), 8) ||
+        !copyReadable(&status, reinterpret_cast<void*>(components + layout.npcKeyOffsets[1]), 8) ||
+        !copyReadable(&playable, reinterpret_cast<void*>(status + layout.runtime.playableIndexOffset), 2) ||
+        !copyReadable(&cache, reinterpret_cast<void*>(components + layout.runtime.contentsComponentOffset), 8)) return false;
+    contents = reinterpret_cast<void*>(cache); return ownerId && cache;
+}
+void clearInteractionTarget(std::uintptr_t owner) {
+    AcquireSRWLockExclusive(&interactionLock);
+    for (auto& target : interactionTargets) if (!owner || target.owner == owner) target = {};
+    ReleaseSRWLockExclusive(&interactionLock);
+}
+// 从原版请求的显式目标 ActorId 获取对象，不能从最近结婚、战斗锁定或菜单预检猜测。
+bool captureInteractionTarget(void* requestContext,const char* source="step") {
+    std::uintptr_t owner = 0, packet = 0; DWORD ownerId = 0, actorId = 0,requester=0,interaction=0,step=0;
+    void* contents = nullptr; std::uint16_t playable = 0, total = 0, payload = 0;
+    if (!interactionOwner(requestContext, owner, ownerId, contents, playable)) return false;
+    if (!copyReadable(&packet, static_cast<std::uint8_t*>(requestContext) + 0x18, 8) ||
+        !copyReadable(&total, static_cast<std::uint8_t*>(requestContext) + 0x10, 2) ||
+        !copyReadable(&payload, reinterpret_cast<void*>(packet + 3), 2) || payload != 16 ||
+        total != payload + 5 || !copyReadable(&actorId, reinterpret_cast<void*>(packet + 5), 4) ||
+        !copyReadable(&requester,reinterpret_cast<void*>(packet+9),4) ||
+        !copyReadable(&interaction,reinterpret_cast<void*>(packet+13),4) ||
+        !copyReadable(&step,reinterpret_cast<void*>(packet+17),4)) {clearInteractionTarget(owner);return false;}
+    // 同一协议也用于 NPC 与 NPC 的自动交互。两端必须恰有一端是当前玩家，
+    // 另一端才可作为伴侣目标；不同交互会交换两端顺序，不能固定把第二端当玩家。
+    const DWORD first=actorId,second=requester;
+    if(first==ownerId && second!=ownerId)actorId=second;
+    else if(second!=ownerId || first==ownerId)return false;
+    clearInteractionTarget(owner);
+    std::vector<PartnerActor> actors;
+    if (!CollectPartnerActors(installedTarget, contents, playable, actors)) return true;
+    InteractionTarget selected{};
+    for (const auto& actor : actors) if (actor.actorId == actorId) {
+        unsigned count = 0;
+        if (marriedRecord(installedTarget, contents, playable, actor.key, count)) selected = {owner, ownerId, actor.key, actorId};
+    }
+    if (!selected.key) {
+        if(logger){
+            char text[256];sprintf_s(text,"INTERACTION TARGET UNAVAILABLE: source=%s actor=0x%08lx playable=%u otherParticipant=0x%08lx interaction=%lu step=%lu; no verified owned married actor.",source,actorId,static_cast<unsigned>(playable),requester,interaction,step);logger(text);
+        }
+        return true;
+    }
+    AcquireSRWLockExclusive(&interactionLock);
+    InteractionTarget* entry = &interactionTargets[0];
+    for (auto& item : interactionTargets) if (!item.owner || item.owner == owner) { entry = &item; break; }
+    *entry = selected;
+    ReleaseSRWLockExclusive(&interactionLock);
+    if (logger) {
+        char text[272]; sprintf_s(text, "INTERACTION TARGET: source=%s owner=0x%08lx playable=%u key=%lu actor=0x%08lx participants=0x%08lx/0x%08lx interaction=%lu step=%lu; verified player/NPC pair.",
+            source,ownerId, static_cast<unsigned>(playable), selected.key, actorId,first,second,interaction,step); logger(text);
+    }
+    return true;
+}
+void* handleTargetRequest(NativeRequestHandler original, void* request, DWORD* result, void* context, bool reset,const char* source) {
+    const bool guard = InterlockedCompareExchange(&relationshipGuardsEnabled, 0, 0) != 0;
+    bool applies=reset;
+    if (guard && !reset) try { applies=captureInteractionTarget(context,source); } catch (...) { /* 未知目标不放行删除。 */ }
+    void* returned = original(request, result, context);
+    if (guard && applies && (reset || (result && *result))) {
+        std::uintptr_t owner = 0;
+        if (copyReadable(&owner, context, 8)) clearInteractionTarget(owner);
+    }
+    return returned;
+}
+void* __fastcall replacementStepRequest(void* request, DWORD* result, void* context) {
+    return handleTargetRequest(originalStepRequest, request, result, context, false,"step");
+}
+void* __fastcall replacementResetRequest(void* request, DWORD* result, void* context) {
+    return handleTargetRequest(originalResetRequest, request, result, context, true,"reset");
+}
+void* __fastcall replacementDialogueEndRequest(void* request, DWORD* result, void* context) {
+    return handleTargetRequest(originalDialogueEndRequest, request, result, context, true,"end");
+}
+
+struct RuntimeActionContext { const MarriageCommitTarget* layout; PartnerSpawnControl original; void* component; std::uint16_t playable; };
+DWORD invokeSinglePartner(void* raw, DWORD key, bool spawn) {
+    const auto& call = *static_cast<RuntimeActionContext*>(raw);
+    SpawnRoute route{call.playable, call.component, key}; SpawnRouteScope scope(route);
+    DWORD result = call.layout->runtime.unavailableResult;
+    call.original(call.component, &result, spawn, call.playable);
+    return route.selectedKey == key ? result : call.layout->runtime.unavailableResult;
+}
+
+void* __fastcall replacementDivorceByKey(void* component, DWORD* result, std::uint16_t playable, const DWORD* npcKey) {
+    DWORD key = 0; unsigned count = 0;
+    if (InterlockedCompareExchange(&relationshipGuardsEnabled, 0, 0) && copyReadable(&key, npcKey, 4) &&
+        marriedRecord(installedTarget, component, playable, key, count)) {
+        if(logger){
+            const auto caller=reinterpret_cast<std::uintptr_t>(_ReturnAddress());
+            const auto host=reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+            char text[192];sprintf_s(text,"DIVORCE REQUEST: source=keyed playable=%u key=%lu callerRVA=0x%llx; preserving explicit native target.",
+                static_cast<unsigned>(playable),key,static_cast<unsigned long long>(caller>=host ? caller-host : 0));logger(text);
+        }
+        RuntimeActionContext call{&installedTarget, originalSpawnControl, component, playable};
+        DWORD interactionActor=0;
+        if(divorceRoute && divorceRoute->key==key)std::memcpy(&interactionActor,divorceRoute->snapshot+4,4);
+        if (!PreparePartnerDivorce(installedTarget, component, playable, key, interactionActor, invokeSinglePartner, &call)) {
+            if (result) *result = installedTarget.runtime.unavailableResult;
+            if (logger) logger("DIVORCE BLOCKED: partner instances could not be dismissed; relationship unchanged.");
+            return result;
+        }
+    }
+    void* returned = originalDivorceByKey(component, result, playable, npcKey);
+    if (result && !*result && key) {
+        AcquireSRWLockExclusive(&choiceLock);
+        for (auto& choice : choices) if (choice.playable == playable && choice.key == key) choice = {};
+        ReleaseSRWLockExclusive(&choiceLock);
+    }
+    if(logger && key && InterlockedCompareExchange(&relationshipGuardsEnabled,0,0)) {
+        std::vector<NativePartnerRecord> remaining;
+        const bool readable=readMarriedRecords(installedTarget,component,playable,remaining);
+        char text[192];sprintf_s(text,"DIVORCE RESULT: key=%lu result=0x%08lx remainingMarried=%u snapshotValid=%d; native call returned.",
+            key,result?*result:MAXDWORD,static_cast<unsigned>(remaining.size()),readable);logger(text);
+    }
+    return returned;
+}
+
+void* __fastcall replacementDivorceCurrent(void* component, DWORD* result) {
+    if (!InterlockedCompareExchange(&relationshipGuardsEnabled, 0, 0)) return originalDivorceCurrent(component, result);
+    std::uintptr_t owner = 0; DWORD ownerId = 0; void* contents = nullptr; std::uint16_t playable = 0;
+    if (!copyReadable(&owner, static_cast<std::uint8_t*>(component) + 8, 8)) owner = 0;
+    InteractionTarget selected{};
+    if (owner && interactionOwner(&owner, owner, ownerId, contents, playable)) {
+        AcquireSRWLockShared(&interactionLock);
+        for (const auto& item : interactionTargets) if (item.owner == owner && item.ownerId == ownerId) selected = item;
+        ReleaseSRWLockShared(&interactionLock);
+    }
+    unsigned count = 0;
+    void* record = selected.key ? marriedRecord(installedTarget, contents, playable, selected.key, count) : nullptr;
+    std::vector<PartnerActor> actors;
+    bool targetAlive = record && CollectPartnerActors(installedTarget, contents, playable, actors) &&
+        std::any_of(actors.begin(), actors.end(), [&](const auto& actor) { return actor.key == selected.key && actor.actorId == selected.actorId; });
+    DivorceRoute route{contents, playable, selected.key};
+    if (!targetAlive || !copyReadable(route.snapshot, record, installedTarget.recordStride)) {
+        if (result) *result = installedTarget.runtime.unavailableResult;
+        if (logger) logger("DIVORCE BLOCKED: no verified current interaction partner; reopen interaction. No latest/first-partner fallback.");
+        return result;
+    }
+    std::memcpy(route.snapshot+4,&selected.actorId,4);
+    // 原函数删除数组后还会读取查询结果。独立快照避免末项换位导致通知另一位伴侣。
+    struct Scope { DivorceRoute* previous; explicit Scope(DivorceRoute* p):previous(divorceRoute){divorceRoute=p;} ~Scope(){divorceRoute=previous;} } scope(&route);
+    if (logger) { char text[144]; sprintf_s(text, "DIVORCE TARGET: key=%lu actor=0x%08lx; interaction target and stable record snapshot.", selected.key, selected.actorId); logger(text); }
+    void* returned = originalDivorceCurrent(component, result);
+    if (result && !*result) clearInteractionTarget(owner);
+    return returned;
+}
+
+void* __fastcall replacementPartnerCreate(void* component, DWORD* result, std::uint16_t playable,
+    DWORD* actorId, const DWORD* npcKey, bool party) {
+    DWORD key = 0, reused = 0, status = installedTarget.runtime.unavailableResult;
+    if (InterlockedCompareExchange(&relationshipGuardsEnabled, 0, 0) && copyReadable(&key, npcKey, 4)) {
+        try {
+            if (ReuseExistingPartnerActor(installedTarget, component, playable, key, reused, status)) {
+                if (result) *result = status; if (!status && actorId) *actorId = reused; return result;
+            }
+        } catch (...) {
+            if (result) *result = installedTarget.runtime.unavailableResult; return result;
+        }
+    }
+    return originalPartnerCreate(component, result, playable, actorId, npcKey, party);
+}
+
 void* __fastcall replacementLookup(void* component,std::uint16_t playable) {
+    if (_ReturnAddress() == installedTarget.runtime.divorceLookupReturn && InterlockedCompareExchange(&relationshipGuardsEnabled,0,0))
+        return divorceRoute && divorceRoute->component == component && divorceRoute->playable == playable ? divorceRoute->snapshot : nullptr;
     return EvaluateLivingPartnerSelection(installedTarget,originalLookup,component,playable,
         InterlockedCompareExchange(&enabled,0,0)!=0);
 }
 
 void* __fastcall replacementSpawnControl(void* component,void* result,bool spawn,std::uint16_t playable) {
-    return EvaluatePartnerSpawnAction(installedTarget,originalSpawnControl,component,result,spawn,playable,
-        InterlockedCompareExchange(&spawnAllEnabled,0,0)!=0);
+    try {
+        return EvaluatePartnerSpawnAction(installedTarget,originalSpawnControl,component,result,spawn,playable,
+            InterlockedCompareExchange(&spawnAllEnabled,0,0)!=0);
+    } catch (...) {
+        // 部分动作可能已经执行，异常后不能再次运行整个原动作。
+        const auto error=installedTarget.runtime.unavailableResult;
+        if(result)std::memcpy(result,&error,4);
+        if(logger)logger("PARTNER ACTION BLOCKED: reconciliation could not complete; no blind retry.");
+        return result;
+    }
 }
 }
 
@@ -299,38 +493,30 @@ void* EvaluatePartnerSpawnAction(const MarriageCommitTarget& layout,PartnerSpawn
     void* component,void* result,bool spawn,std::uint16_t playable,bool active) {
     if(!original)return result;
     if(!active || spawnRoute)return original(component,result,spawn,playable);
-    SpawnRoute primary{playable};
-    SpawnRouteScope primaryScope(primary);
-    void* returned=original(component,result,spawn,playable);
-    DWORD primaryResult=MAXDWORD;
-    if(!copyReadable(&primaryResult,result,sizeof(primaryResult)) || primaryResult!=0 ||
-        !primary.component || !primary.selectedKey)return returned;
     std::vector<NativePartnerRecord> partners;
-    if(!readMarriedRecords(layout,primary.component,playable,partners))return returned;
-    unsigned attempted=0,accepted=0;
+    if (!readMarriedRecords(layout,component,playable,partners) || partners.empty()) return original(component,result,spawn,playable);
+    DWORD primaryKey = wantedPartner(playable);
+    if (std::none_of(partners.begin(),partners.end(),[&](const auto& partner){return partner.key == primaryKey;}))
+        primaryKey = partners.front().key;
+    std::stable_sort(partners.begin(),partners.end(),[&](const auto& a,const auto& b){return a.key==primaryKey && b.key!=primaryKey;});
+    RuntimeActionContext call{&layout,original,component,playable};
+    DWORD primaryResult=layout.runtime.unavailableResult;
+    unsigned attempted=0,accepted=0,verified=0,pending=0;
     for(const auto& partner:partners) {
-        if(partner.key==primary.selectedKey)continue;
-        SpawnRoute extra{playable,primary.component,partner.key};
-        SpawnRouteScope extraScope(extra);
-        DWORD extraResult=MAXDWORD;
-        // 临时结果只给扩展动作使用，保留当前对象动作原来的输出与返回地址。
-        original(component,&extraResult,spawn,playable);
-        ++attempted;
-        if(extraResult==0 && extra.selectedKey==partner.key)++accepted;
-        else if(logger) {
-            char message[192];
-            sprintf_s(message,"PARTNER ACTION EXTRA FAILED: spawn=%d playable=%u key=%lu result=0x%08lx selectedKey=%lu",
-                spawn,static_cast<unsigned>(playable),partner.key,extraResult,extra.selectedKey);
-            logger(message);
-        }
+        const auto action=ReconcilePartnerAction(layout,component,playable,partner.key,spawn,invokeSinglePartner,&call);
+        if(partner.key==primaryKey)primaryResult=action.result;
+        else {++attempted;if(!action.result)++accepted;}
+        if(action.verified)++verified;if(action.pending)++pending;
+        // 一位对象失败不再阻止其余伴侣执行各自的原版场景检查。
     }
+    if(result)std::memcpy(result,&primaryResult,sizeof(primaryResult));
     if(logger) {
-        char message[224];
-        sprintf_s(message,"PARTNER ACTION: spawn=%d playable=%u primaryKey=%lu marriedRecords=%u extrasAttempted=%u extrasAccepted=%u; primary result preserved.",
-            spawn,static_cast<unsigned>(playable),primary.selectedKey,static_cast<unsigned>(partners.size()),attempted,accepted);
+        char message[272];
+        sprintf_s(message,"PARTNER ACTION: spawn=%d playable=%u primaryKey=%lu marriedRecords=%u extrasAttempted=%u extrasAccepted=%u verified=%u pending=%u; instance registry checked.",
+            spawn,static_cast<unsigned>(playable),primaryKey,static_cast<unsigned>(partners.size()),attempted,accepted,verified,pending);
         logger(message);
     }
-    return returned;
+    return result;
 }
 
 bool EvaluateMarriageEligibility(const MarriageCommitTarget& layout, MarriageEligibility original,
@@ -351,6 +537,7 @@ bool EvaluateMarriageEligibility(const MarriageCommitTarget& layout, MarriageEli
 
 bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingEvaluator) {
     logger = writeLog;
+    SetPartnerRuntimeLog(writeLog);
     const char* error = nullptr;
     bool found = false;
     try { found = FindMarriageCommitTarget(module,installedTarget,error,livingEvaluator); }
@@ -361,6 +548,11 @@ bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingE
         if (logger) logger(message);
         return false;
     }
+    if (!FindPartnerRuntimeTarget(module,installedTarget,error)) {
+        sprintf_s(message,"COMMIT HOOK UNAVAILABLE: relationship guards not compatible: %s.",error ? error : "unknown layout");
+        if(logger)logger(message);
+        return false;
+    }
     sprintf_s(message,"COMMIT RESOLVED: eligibility RVA=0x%08lx arrays=0x%x stride=0x%x state=0x%x playable=0x%x",
         installedTarget.functionRva,installedTarget.arrayOffset,installedTarget.recordStride,
         installedTarget.stateOffset,installedTarget.playableOffset);
@@ -369,55 +561,51 @@ bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingE
         installedTarget.lookupRva,installedTarget.writerRva,installedTarget.npcKeyOffsets[0],installedTarget.npcKeyOffsets[1],
         installedTarget.npcKeyOffsets[2],installedTarget.npcKeyOffsets[3]);
     if(logger)logger(message);
-    MH_STATUS status = MH_Initialize();
-    if (status == MH_OK || status == MH_ERROR_ALREADY_INITIALIZED) {
-        status = MH_CreateHook(reinterpret_cast<void*>(installedTarget.function),
-            reinterpret_cast<void*>(&replacementEligibility),reinterpret_cast<void**>(&originalEligibility));
-        if (status == MH_OK) {
-            status=MH_CreateHook(reinterpret_cast<void*>(installedTarget.lookup),
-                reinterpret_cast<void*>(&replacementLookup),reinterpret_cast<void**>(&originalLookup));
-            if(status==MH_OK)status=MH_QueueEnableHook(reinterpret_cast<void*>(installedTarget.function));
-            if(status==MH_OK)status=MH_QueueEnableHook(reinterpret_cast<void*>(installedTarget.lookup));
-            if(status==MH_OK)status=MH_ApplyQueued();
-            if(status!=MH_OK) {
-                MH_DisableHook(reinterpret_cast<void*>(installedTarget.lookup));
-                MH_DisableHook(reinterpret_cast<void*>(installedTarget.function));
-                MH_RemoveHook(reinterpret_cast<void*>(installedTarget.lookup));
-                MH_RemoveHook(reinterpret_cast<void*>(installedTarget.function));
-            }
-        }
+    struct Hook { void* target; void* replacement; void** original; };
+    const auto& rt=installedTarget.runtime;
+    const Hook hooks[]={
+        {reinterpret_cast<void*>(installedTarget.function),reinterpret_cast<void*>(&replacementEligibility),reinterpret_cast<void**>(&originalEligibility)},
+        {reinterpret_cast<void*>(installedTarget.lookup),reinterpret_cast<void*>(&replacementLookup),reinterpret_cast<void**>(&originalLookup)},
+        {rt.divorceCurrent,reinterpret_cast<void*>(&replacementDivorceCurrent),reinterpret_cast<void**>(&originalDivorceCurrent)},
+        {reinterpret_cast<void*>(rt.divorceByKey),reinterpret_cast<void*>(&replacementDivorceByKey),reinterpret_cast<void**>(&originalDivorceByKey)},
+        {reinterpret_cast<void*>(rt.create),reinterpret_cast<void*>(&replacementPartnerCreate),reinterpret_cast<void**>(&originalPartnerCreate)},
+        {reinterpret_cast<void*>(installedTarget.spawnControl),reinterpret_cast<void*>(&replacementSpawnControl),reinterpret_cast<void**>(&originalSpawnControl)},
+        {reinterpret_cast<void*>(rt.stepRequest),reinterpret_cast<void*>(&replacementStepRequest),reinterpret_cast<void**>(&originalStepRequest)},
+        {reinterpret_cast<void*>(rt.resetRequest),reinterpret_cast<void*>(&replacementResetRequest),reinterpret_cast<void**>(&originalResetRequest)},
+        {reinterpret_cast<void*>(rt.dialogueEndRequest),reinterpret_cast<void*>(&replacementDialogueEndRequest),reinterpret_cast<void**>(&originalDialogueEndRequest)}
+    };
+    MH_STATUS status = MH_Initialize(); unsigned installed=0;
+    if(status==MH_ERROR_ALREADY_INITIALIZED)status=MH_OK;
+    if(status==MH_OK)for(const auto& hook:hooks) {
+        status=MH_CreateHook(hook.target,hook.replacement,hook.original);
+        if(status!=MH_OK)break;
+        ++installed;status=MH_QueueEnableHook(hook.target);if(status!=MH_OK)break;
     }
+    if(status==MH_OK)status=MH_ApplyQueued();
     if (status != MH_OK) {
+        // 目标、上下文和实例保护必须成套发布，不留下已启用的半套对象路由。
+        for(unsigned i=0;i<installed;++i){MH_DisableHook(hooks[i].target);MH_RemoveHook(hooks[i].target);}
         sprintf_s(message,"COMMIT HOOK UNAVAILABLE: MinHook %s.",MH_StatusToString(status));
         if (logger) logger(message);
         return false;
     }
     if (logger) logger("COMMIT HOOK INSTALLED: original eligibility plus private-view recheck; override defaults off.");
     if (logger) logger("PARTNER ROUTE INSTALLED: native write target is preferred only after its married record exists.");
-    if(installedTarget.spawnControl) {
-        sprintf_s(message,"PARTNER SPAWN RESOLVED: control RVA=0x%08lx",installedTarget.spawnRva);
-        if(logger)logger(message);
-        auto spawnStatus=MH_CreateHook(reinterpret_cast<void*>(installedTarget.spawnControl),
-            reinterpret_cast<void*>(&replacementSpawnControl),reinterpret_cast<void**>(&originalSpawnControl));
-        if(spawnStatus==MH_OK) {
-            spawnStatus=MH_EnableHook(reinterpret_cast<void*>(installedTarget.spawnControl));
-            if(spawnStatus!=MH_OK)MH_RemoveHook(reinterpret_cast<void*>(installedTarget.spawnControl));
-        }
-        spawnHookReady=spawnStatus==MH_OK;
-        if(logger) {
-            if(spawnHookReady)logger("PARTNER SPAWN HOOK INSTALLED: native primary action plus optional married-partner fan-out; default off.");
-            else {
-                sprintf_s(message,"PARTNER SPAWN HOOK UNAVAILABLE: MinHook %s",MH_StatusToString(spawnStatus));
-                logger(message);
-            }
-        }
-    } else if(logger)logger("PARTNER SPAWN HOOK UNAVAILABLE: control prototype or DWORD output contract not found.");
+    runtimeHookReady=true;spawnHookReady=true;
+    if(logger){
+        sprintf_s(message,"PARTNER SPAWN RESOLVED: control RVA=0x%08lx; actor registry and creation guard compatible.",installedTarget.spawnRva);logger(message);
+        logger("PARTNER SPAWN HOOK INSTALLED: instance reconciliation, native creation reuse and per-partner actions.");
+        sprintf_s(message,"DIVORCE GUARD INSTALLED: RVA=0x%08lx; explicit interaction target and stable result snapshot.",rt.divorceRva);logger(message);
+    }
     return true;
 }
 
 bool IsPartnerSpawnHookReady(){return spawnHookReady;}
+bool IsPartnerRuntimeReady(){return runtimeHookReady;}
 
-void SetMarriageCommitOverride(bool active,DWORD preferredPartnerKey,bool spawnAll) {
+void SetMarriageCommitOverride(bool active,DWORD preferredPartnerKey,bool spawnAll,bool relationshipGuards) {
+    InterlockedExchange(&relationshipGuardsEnabled,relationshipGuards && runtimeHookReady ? 1 : 0);
+    if(!relationshipGuards)clearInteractionTarget(0);
     InterlockedExchange(&spawnAllEnabled,spawnAll && spawnHookReady ? 1 : 0);
     const auto oldKey=InterlockedExchange(&configuredPartnerKey,static_cast<LONG>(preferredPartnerKey));
     const auto previous=InterlockedExchange(&enabled,active ? 1 : 0);
