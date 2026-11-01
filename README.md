@@ -41,7 +41,6 @@
 - [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/CohabitationGateExperiment.ini)：配置。
 - [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2。
 
-GitHub 自动生成的 `Source code` 压缩包只包含源码，不能代替 `.asi` 附件。当前版本标记为预发布，请从上面的版本页面或所有版本页面下载。
 
 ### 2. 退出游戏并备份存档
 
@@ -67,13 +66,12 @@ Crimson Desert/
     └── CohabitationGateExperiment.ini
 ```
 
-本文使用上述同目录布局。插件总是读取**与自身 `.asi` 同目录、同名的 `.ini`**，日志也写在这里；修改源码仓库里的配置不会自动影响已安装的插件。
 
 ### 4. 开启需要的功能
 
 发布附件已默认开启全部功能，`PreferredPartnerKey=0` 保持自动选择伴侣。需要关闭某项功能时，将对应开关设为 `0`。
 
-更新旧版本时，完整退出游戏后替换 `.asi`，并在现有 INI 中补齐新增选项。只修改 INI 无法让旧 `.asi` 获得新功能；直接覆盖 INI 则会重置自己的配置。
+更新旧版本时，完整退出游戏后替换 `.asi`，并在现有 INI 中补齐新增选项。
 
 ## 配置说明
 
