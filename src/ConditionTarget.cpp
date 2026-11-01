@@ -470,6 +470,77 @@ bool supportsPrivateMarriageView(const Image& image, DWORD begin, DWORD length,
 }
 
 namespace {
+// 控制入口的返回结构当前只有一个 DWORD。拒绝把输出指针转存到未知辅助函数、
+// 访问额外字段或已有入口跳转的变体，确保扩展调用的临时结果缓冲区契约明确。
+bool spawnOutputIsDword(const Image& image,DWORD begin,DWORD length) {
+    bool saved=false,returned=false;
+    unsigned saves=0;
+    for(DWORD at=0;at<length;) {
+        unsigned char bytes[16]={};std::memcpy(bytes,image.base+begin+at,(std::min)(DWORD{15},length-at));
+        hde64s ins{};const auto count=hde64_disasm(bytes,&ins);
+        if(!count || (ins.flags&F_ERROR) || count>length-at)return false;
+        const unsigned reg=ins.modrm_reg+(ins.rex_r?8u:0u),rm=ins.modrm_rm+(ins.rex_b?8u:0u);
+        const bool modrm=(ins.flags&F_MODRM)!=0;
+        if(modrm && ins.modrm_mod==3 && ins.opcode==0x8b && ins.rex_w && reg==6 && rm==2) {
+            if(++saves!=1)return false;saved=true;at+=count;continue;
+        }
+        if(!saved) {
+            if(ins.opcode==0xe8 || ins.opcode==0xe9 || ins.opcode==0xeb || ins.opcode==0xff)return false;
+            if(modrm && ins.opcode==0x89 && ins.modrm_mod!=3 && reg==2)return false;
+        } else {
+            if((ins.opcode>=0xa4 && ins.opcode<=0xaf) || (ins.opcode==0x56 && !ins.rex_b))return false;
+            if(modrm && ins.modrm_mod==3 && (reg==6 || rm==6)) {
+                if(ins.opcode==0x8b && ins.rex_w && reg==0 && rm==6 && at+96>=length)returned=true;
+                else return false;
+            }
+            if(modrm && ins.modrm_mod!=3) {
+                const bool sib=(ins.flags&F_SIB)!=0;
+                const unsigned base=sib?ins.sib_base+(ins.rex_b?8u:0u):rm;
+                if(reg==6 && !(returned && ins.opcode==0x8b && base==11))return false;
+                if(sib && ins.sib_index+(ins.rex_x?8u:0u)==6)return false;
+                if(base==6) {
+                    std::int64_t offset=0;
+                    if(ins.flags&F_DISP8)offset=static_cast<std::int8_t>(ins.disp.disp8);
+                    else if(ins.flags&F_DISP32)offset=static_cast<std::int32_t>(ins.disp.disp32);
+                    if(sib || ins.p_seg || ins.p_67 || ins.rex_w || ins.opcode!=0x89 || offset!=0)return false;
+                }
+            }
+            if(returned && (ins.opcode==0xe8 || ins.opcode==0xff))return false;
+        }
+        if(ins.opcode==0xc3)return saved && returned && saves==1;
+        at+=count;
+    }
+    return false;
+}
+
+void findPartnerSpawnControl(const Image& image,MarriageCommitTarget& target) {
+    unsigned matches=0;
+    for(const auto& span:image.spans) {
+        if(!span.executable)continue;
+        DWORD at=span.begin;
+        while(at<span.end && span.end-at>=5) {
+            const auto p=static_cast<const std::uint8_t*>(std::memchr(image.base+at,0xe8,span.end-at-4));
+            if(!p)break;at=static_cast<DWORD>(p-image.base)+1;
+            std::int32_t relative=0;std::memcpy(&relative,p+1,4);
+            if(static_cast<std::int64_t>(at-1)+5+relative!=target.lookupRva)continue;
+            DWORD begin=0,length=0;if(!image.functionRange(at-1,begin,length))continue;
+            bool arguments=false,record=false;
+            constexpr unsigned char args[]={0x41,0x0f,0xb7,0xd9,0x45,0x0f,0xb6,0xf8,0x48,0x8b,0xf2,
+                0x4c,0x8b,0xf1,0x48,0x8b,0x79,0x08,0x48,0x8d,0x57,0x08};
+            constexpr unsigned char keyAndActor[]={0x8b,0x78,0x04,0x8b,0x00};
+            for(DWORD i=0;i+sizeof(keyAndActor)<=length;++i) {
+                const auto q=image.base+begin+i;
+                if(i+sizeof(args)<=length && !std::memcmp(q,args,sizeof(args)))arguments=true;
+                if(!std::memcmp(q,keyAndActor,sizeof(keyAndActor)))record=true;
+            }
+            if(!arguments || !record || !spawnOutputIsDword(image,begin,length))continue;
+            if(matches && target.spawnRva==begin)continue;
+            if(++matches>1){target.spawnControl=nullptr;target.spawnRva=0;return;}
+            target.spawnRva=begin;target.spawnControl=reinterpret_cast<PartnerSpawnControl>(image.base+begin);
+        }
+    }
+}
+
 bool findMarriageRouting(const Image& image, MarriageCommitTarget& target, DWORD livingEvaluator,
     const char*& error) {
     DWORD guardLength = 0;
@@ -558,6 +629,7 @@ bool findMarriageRouting(const Image& image, MarriageCommitTarget& target, DWORD
         target.lookup=reinterpret_cast<LivingPartnerLookup>(image.base+candidate);
     }
     if (lookups!=1) { error="living partner lookup not found"; return false; }
+    findPartnerSpawnControl(image,target);
     return true;
 }
 }

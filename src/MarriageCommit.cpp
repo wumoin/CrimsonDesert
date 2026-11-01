@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <intrin.h>
+#include <algorithm>
 
 namespace {
 struct RelationshipArray {
@@ -23,6 +24,9 @@ struct EligibilityView {
 MarriageCommitTarget installedTarget{};
 MarriageEligibility originalEligibility = nullptr;
 LivingPartnerLookup originalLookup = nullptr;
+PartnerSpawnControl originalSpawnControl = nullptr;
+bool spawnHookReady = false;
+volatile LONG spawnAllEnabled = 0;
 PluginLog logger = nullptr;
 volatile LONG enabled = 0;
 volatile LONG reported = 0;
@@ -38,6 +42,18 @@ struct PartnerChoice {
     ULONGLONG when=0;
 };
 PartnerChoice choices[64] = {};
+struct SpawnRoute {
+    std::uint16_t playable;
+    void* component=nullptr;
+    DWORD forcedKey=0, selectedKey=0;
+    bool captured=false, selectionCaptured=false;
+};
+thread_local SpawnRoute* spawnRoute=nullptr;
+struct SpawnRouteScope {
+    SpawnRoute* previous;
+    explicit SpawnRouteScope(SpawnRoute& route):previous(spawnRoute){spawnRoute=&route;}
+    ~SpawnRouteScope(){spawnRoute=previous;}
+};
 
 bool copyReadable(void* destination, const void* source, std::size_t length) {
     SIZE_T copied = 0;
@@ -69,29 +85,28 @@ DWORD wantedPartner(std::uint16_t playable) {
     return key;
 }
 
-void* marriedRecord(const MarriageCommitTarget& layout, void* component, std::uint16_t playable,
-    DWORD wanted, unsigned& total) {
-    total=0;
-    if (!component || !wanted || layout.arrayOffset>4096 || layout.recordStride<16 || layout.recordStride>127 ||
-        layout.stateOffset>=layout.recordStride || layout.playableOffset+2>layout.recordStride) return nullptr;
+struct NativePartnerRecord { DWORD key;std::uintptr_t address; };
+bool readMarriedRecords(const MarriageCommitTarget& layout, void* component, std::uint16_t playable,
+    std::vector<NativePartnerRecord>& partners) {
+    partners.clear();
+    if (!component || layout.arrayOffset>4096 || layout.recordStride<16 || layout.recordStride>127 ||
+        layout.stateOffset>=layout.recordStride || layout.playableOffset+2>layout.recordStride) return false;
     try {
         RelationshipArray outer{};
         if (!copyReadable(&outer,static_cast<std::uint8_t*>(component)+layout.arrayOffset,sizeof(outer)) ||
-            outer.count>64 || outer.capacity<outer.count) return nullptr;
+            outer.count>64 || outer.capacity<outer.count) return false;
         std::vector<RelationshipArray> arrays(outer.count);
         if (outer.count && !copyReadable(arrays.data(),reinterpret_cast<void*>(outer.data),arrays.size()*sizeof(RelationshipArray)))
-            return nullptr;
+            return false;
         std::size_t totalBytes=0;
-        void* selected=nullptr;
-        unsigned selectedCount=0;
         for (const auto& array:arrays) {
-            if (array.count>4096 || array.capacity<array.count) return nullptr;
+            if (array.count>4096 || array.capacity<array.count) return false;
             const auto bytes=static_cast<std::size_t>(array.count)*layout.recordStride;
             totalBytes+=bytes;
-            if (totalBytes>8*1024*1024) return nullptr;
+            if (totalBytes>8*1024*1024) return false;
             if (!bytes) continue;
             std::vector<std::uint8_t> records(bytes);
-            if (!copyReadable(records.data(),reinterpret_cast<void*>(array.data),bytes)) return nullptr;
+            if (!copyReadable(records.data(),reinterpret_cast<void*>(array.data),bytes)) return false;
             for (unsigned i=0;i<array.count;++i) {
                 const auto record=records.data()+static_cast<std::size_t>(i)*layout.recordStride;
                 std::uint16_t owner=0;DWORD key=0;
@@ -99,16 +114,24 @@ void* marriedRecord(const MarriageCommitTarget& layout, void* component, std::ui
                 std::memcpy(&key,record,4);
                 if (owner!=playable) continue;
                 if(record[layout.stateOffset]!=2)continue;
-                ++total;
-                if (key==wanted) {
-                    ++selectedCount;
-                    // 返回真实缓存内的记录地址，绝不返回临时快照的地址。
-                    selected=reinterpret_cast<void*>(array.data+static_cast<std::size_t>(i)*layout.recordStride);
-                }
+                if(!key || key==MAXDWORD)return false;
+                partners.push_back({key,array.data+static_cast<std::size_t>(i)*layout.recordStride});
             }
         }
-        return selectedCount==1 ? selected : nullptr;
-    } catch (...) { return nullptr; }
+        std::sort(partners.begin(),partners.end(),[](const auto& a,const auto& b){return a.key<b.key;});
+        return std::adjacent_find(partners.begin(),partners.end(),
+            [](const auto& a,const auto& b){return a.key==b.key;})==partners.end();
+    } catch (...) { return false; }
+}
+
+void* marriedRecord(const MarriageCommitTarget& layout,void* component,std::uint16_t playable,
+    DWORD wanted,unsigned& total) {
+    total=0;
+    std::vector<NativePartnerRecord> partners;
+    if(!wanted || !readMarriedRecords(layout,component,playable,partners))return nullptr;
+    total=static_cast<unsigned>(partners.size());
+    for(const auto& partner:partners)if(partner.key==wanted)return reinterpret_cast<void*>(partner.address);
+    return nullptr;
 }
 
 // 原版资格函数只读取组件前缀、关系数组与 owner 指针。构造同布局的私有只读视图，
@@ -193,6 +216,11 @@ void* __fastcall replacementLookup(void* component,std::uint16_t playable) {
     return EvaluateLivingPartnerSelection(installedTarget,originalLookup,component,playable,
         InterlockedCompareExchange(&enabled,0,0)!=0);
 }
+
+void* __fastcall replacementSpawnControl(void* component,void* result,bool spawn,std::uint16_t playable) {
+    return EvaluatePartnerSpawnAction(installedTarget,originalSpawnControl,component,result,spawn,playable,
+        InterlockedCompareExchange(&spawnAllEnabled,0,0)!=0);
+}
 }
 
 bool RememberMarriageCommitTarget(const MarriageCommitTarget& layout, void* component,
@@ -223,9 +251,29 @@ void* EvaluateLivingPartnerSelection(const MarriageCommitTarget& layout, LivingP
     void* component, std::uint16_t playable, bool active) {
     if (!original) return nullptr;
     void* native=original(component,playable);
-    if (!active || !native) return native;
+    auto* scope=spawnRoute && spawnRoute->playable==playable ? spawnRoute : nullptr;
+    if(scope && !scope->captured) {
+        scope->captured=true;
+        if(scope->component && scope->component!=component)return nullptr;
+        scope->component=component;
+    }
+    auto capture=[&](void* selected){
+        if(scope && scope->component==component && !scope->selectionCaptured) {
+            scope->selectionCaptured=true;
+            scope->selectedKey=0;
+            if(selected)copyReadable(&scope->selectedKey,selected,sizeof(scope->selectedKey));
+        }
+        return selected;
+    };
+    if(!native)return capture(nullptr);
+    if(scope && scope->component==component && scope->forcedKey) {
+        // 出场扩展每次只临时指定一个真实已婚对象，不改全局当前对象偏好。
+        unsigned ignored=0;
+        return capture(marriedRecord(layout,component,playable,scope->forcedKey,ignored));
+    }
+    if (!active) return capture(native);
     const auto wanted=wantedPartner(playable);
-    if (!wanted) return native;
+    if (!wanted) return capture(native);
     unsigned total=0;
     void* selected=marriedRecord(layout,component,playable,wanted,total);
     if (!selected) {
@@ -235,7 +283,7 @@ void* EvaluateLivingPartnerSelection(const MarriageCommitTarget& layout, LivingP
                 static_cast<unsigned>(playable),wanted,total);
             logger(message);
         }
-        return native; // 未实际写入、不是本角色伴侣或快照无效时保留原选择。
+        return capture(native); // 未实际写入、不是本角色伴侣或快照无效时保留原选择。
     }
     if (logger && InterlockedCompareExchange(&routeReported,1,0)==0) {
         char message[224];
@@ -244,7 +292,45 @@ void* EvaluateLivingPartnerSelection(const MarriageCommitTarget& layout, LivingP
             static_cast<unsigned>(playable),nativeKey,wanted,total);
         logger(message);
     }
-    return selected;
+    return capture(selected);
+}
+
+void* EvaluatePartnerSpawnAction(const MarriageCommitTarget& layout,PartnerSpawnControl original,
+    void* component,void* result,bool spawn,std::uint16_t playable,bool active) {
+    if(!original)return result;
+    if(!active || spawnRoute)return original(component,result,spawn,playable);
+    SpawnRoute primary{playable};
+    SpawnRouteScope primaryScope(primary);
+    void* returned=original(component,result,spawn,playable);
+    DWORD primaryResult=MAXDWORD;
+    if(!copyReadable(&primaryResult,result,sizeof(primaryResult)) || primaryResult!=0 ||
+        !primary.component || !primary.selectedKey)return returned;
+    std::vector<NativePartnerRecord> partners;
+    if(!readMarriedRecords(layout,primary.component,playable,partners))return returned;
+    unsigned attempted=0,accepted=0;
+    for(const auto& partner:partners) {
+        if(partner.key==primary.selectedKey)continue;
+        SpawnRoute extra{playable,primary.component,partner.key};
+        SpawnRouteScope extraScope(extra);
+        DWORD extraResult=MAXDWORD;
+        // 临时结果只给扩展动作使用，保留当前对象动作原来的输出与返回地址。
+        original(component,&extraResult,spawn,playable);
+        ++attempted;
+        if(extraResult==0 && extra.selectedKey==partner.key)++accepted;
+        else if(logger) {
+            char message[192];
+            sprintf_s(message,"PARTNER ACTION EXTRA FAILED: spawn=%d playable=%u key=%lu result=0x%08lx selectedKey=%lu",
+                spawn,static_cast<unsigned>(playable),partner.key,extraResult,extra.selectedKey);
+            logger(message);
+        }
+    }
+    if(logger) {
+        char message[224];
+        sprintf_s(message,"PARTNER ACTION: spawn=%d playable=%u primaryKey=%lu marriedRecords=%u extrasAttempted=%u extrasAccepted=%u; primary result preserved.",
+            spawn,static_cast<unsigned>(playable),primary.selectedKey,static_cast<unsigned>(partners.size()),attempted,accepted);
+        logger(message);
+    }
+    return returned;
 }
 
 bool EvaluateMarriageEligibility(const MarriageCommitTarget& layout, MarriageEligibility original,
@@ -308,10 +394,31 @@ bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingE
     }
     if (logger) logger("COMMIT HOOK INSTALLED: original eligibility plus private-view recheck; override defaults off.");
     if (logger) logger("PARTNER ROUTE INSTALLED: native write target is preferred only after its married record exists.");
+    if(installedTarget.spawnControl) {
+        sprintf_s(message,"PARTNER SPAWN RESOLVED: control RVA=0x%08lx",installedTarget.spawnRva);
+        if(logger)logger(message);
+        auto spawnStatus=MH_CreateHook(reinterpret_cast<void*>(installedTarget.spawnControl),
+            reinterpret_cast<void*>(&replacementSpawnControl),reinterpret_cast<void**>(&originalSpawnControl));
+        if(spawnStatus==MH_OK) {
+            spawnStatus=MH_EnableHook(reinterpret_cast<void*>(installedTarget.spawnControl));
+            if(spawnStatus!=MH_OK)MH_RemoveHook(reinterpret_cast<void*>(installedTarget.spawnControl));
+        }
+        spawnHookReady=spawnStatus==MH_OK;
+        if(logger) {
+            if(spawnHookReady)logger("PARTNER SPAWN HOOK INSTALLED: native primary action plus optional married-partner fan-out; default off.");
+            else {
+                sprintf_s(message,"PARTNER SPAWN HOOK UNAVAILABLE: MinHook %s",MH_StatusToString(spawnStatus));
+                logger(message);
+            }
+        }
+    } else if(logger)logger("PARTNER SPAWN HOOK UNAVAILABLE: control prototype or DWORD output contract not found.");
     return true;
 }
 
-void SetMarriageCommitOverride(bool active,DWORD preferredPartnerKey) {
+bool IsPartnerSpawnHookReady(){return spawnHookReady;}
+
+void SetMarriageCommitOverride(bool active,DWORD preferredPartnerKey,bool spawnAll) {
+    InterlockedExchange(&spawnAllEnabled,spawnAll && spawnHookReady ? 1 : 0);
     const auto oldKey=InterlockedExchange(&configuredPartnerKey,static_cast<LONG>(preferredPartnerKey));
     const auto previous=InterlockedExchange(&enabled,active ? 1 : 0);
     if(oldKey!=static_cast<LONG>(preferredPartnerKey)) {

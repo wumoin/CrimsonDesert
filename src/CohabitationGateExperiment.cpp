@@ -30,6 +30,7 @@ struct Settings {
     LONG requested = 0;
     bool ignoreExistingMarriageOnCommit = false;
     DWORD preferredPartnerKey = 0;
+    bool spawnAllPartners = false;
     LONG active() const { return enabled ? requested : 0; }
 };
 
@@ -39,6 +40,7 @@ Settings readSettings() {
     settings.ignoreExistingMarriageOnCommit = GetPrivateProfileIntW(
         L"Relationships", L"IgnoreExistingMarriageOnCommit", 0, iniPath) != 0;
     settings.preferredPartnerKey=GetPrivateProfileIntW(L"Relationships",L"PreferredPartnerKey",0,iniPath);
+    settings.spawnAllPartners=GetPrivateProfileIntW(L"Relationships",L"SpawnAllPartners",0,iniPath)!=0;
     for (unsigned i = 0; i < conditionCount; ++i) {
         // 保持旧配置的行为：缺少子开关时只启用同居覆盖，其他条件不动。
         const int fallback = i == static_cast<unsigned>(ConditionKind::LivingTogether) ? 1 : 0;
@@ -171,24 +173,29 @@ DWORD WINAPI run(void*) {
     int oldEnabled = -1;
     int oldCommit = -1;
     DWORD oldPartnerKey=MAXDWORD;
+    int oldSpawn=-1;
     for (;;) {
         const auto settings = readSettings();
         // 五项条件覆盖的总开关与子开关用一个原子位掩码发布。
         InterlockedExchange(&activeConditions, settings.active());
         const bool commitActive = settings.enabled && settings.ignoreExistingMarriageOnCommit && commitHookReady;
-        SetMarriageCommitOverride(commitActive,settings.preferredPartnerKey);
+        const bool spawnActive=settings.enabled && settings.spawnAllPartners && IsPartnerSpawnHookReady();
+        SetMarriageCommitOverride(commitActive,settings.preferredPartnerKey,spawnActive);
         if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled ||
-            static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit || settings.preferredPartnerKey!=oldPartnerKey) {
-            char message[320];
-            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d IgnoreExistingMarriageOnCommit=%d CommitOverrideActive=%d PreferredPartnerKey=%lu",
+            static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit || settings.preferredPartnerKey!=oldPartnerKey ||
+            static_cast<int>(settings.spawnAllPartners)!=oldSpawn) {
+            char message[400];
+            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d IgnoreExistingMarriageOnCommit=%d CommitOverrideActive=%d PreferredPartnerKey=%lu SpawnAllPartners=%d SpawnAllActive=%d",
                 settings.enabled, (settings.requested & 1) != 0, (settings.requested & 2) != 0,
                 (settings.requested & 4) != 0, (settings.requested & 8) != 0,
-                (settings.requested & 16) != 0, settings.ignoreExistingMarriageOnCommit, commitActive,settings.preferredPartnerKey);
+                (settings.requested & 16) != 0, settings.ignoreExistingMarriageOnCommit, commitActive,settings.preferredPartnerKey,
+                settings.spawnAllPartners,spawnActive);
             log(message);
             oldRequested = settings.requested;
             oldEnabled = settings.enabled;
             oldCommit = settings.ignoreExistingMarriageOnCommit;
             oldPartnerKey=settings.preferredPartnerKey;
+            oldSpawn=settings.spawnAllPartners;
         }
         Sleep(5000);
     }
@@ -199,7 +206,7 @@ BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         // 扫描、文件访问和挂钩都在工作线程执行，避免占用 DLL 加载器锁。
         self = module;
-        DisableThreadLibraryCalls(module);
+        // 静态 CRT 与线程局部出场作用域需要正常线程通知，不禁用它们。
         HANDLE thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
         // 关闭句柄不会终止线程；卸载插件应完整退出游戏。
         if (thread) CloseHandle(thread);

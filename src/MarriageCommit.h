@@ -4,6 +4,7 @@
 
 using MarriageEligibility = bool(__fastcall*)(void*, std::uint16_t, void*);
 using LivingPartnerLookup = void*(__fastcall*)(void*, std::uint16_t);
+using PartnerSpawnControl = void*(__fastcall*)(void*, void*, bool, std::uint16_t);
 using PluginLog = void(*)(const char*);
 
 // 从原版资格函数恢复的只读关系表布局；不使用固定游戏 RVA。
@@ -19,6 +20,8 @@ struct MarriageCommitTarget {
     void* commitCallReturn = nullptr;
     DWORD writerRva = 0;
     unsigned npcKeyOffsets[4] = {};
+    PartnerSpawnControl spawnControl = nullptr;
+    DWORD spawnRva = 0;
 };
 
 bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, const char*& error,
@@ -36,5 +39,9 @@ void* EvaluateLivingPartnerSelection(const MarriageCommitTarget& layout, LivingP
     void* component, std::uint16_t playable, bool enabled);
 
 bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingEvaluator = nullptr);
+bool IsPartnerSpawnHookReady();
+// 原版主对象动作成功后，按真实已婚记录扩展同居/召唤；不改主动作返回值。
+void* EvaluatePartnerSpawnAction(const MarriageCommitTarget& layout, PartnerSpawnControl original,
+    void* component, void* result, bool spawn, std::uint16_t playable, bool enabled);
 // preferredPartnerKey=0 时跟随本进程中本次写入目标；非 0 仅选择已属本角色的已婚记录。
-void SetMarriageCommitOverride(bool enabled, DWORD preferredPartnerKey = 0);
+void SetMarriageCommitOverride(bool enabled, DWORD preferredPartnerKey = 0, bool spawnAll = false);
