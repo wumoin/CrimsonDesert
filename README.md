@@ -62,18 +62,73 @@ build.cmd
 
 输出为 `build\CohabitationGateExperiment.asi` 和默认关闭的 INI。可以在 x64 Native Tools 命令提示符中运行；也可以由脚本通过 `vswhere` 查找工具链。
 
-## 安装与开关
+## 使用方法：在游戏中使用补丁
 
-完整退出游戏后，将构建出的 `.asi` 和 `.ini` 放到游戏 `bin64`，并使用兼容的 ASI Loader。研究时使用的是 [ThirteenAG Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) 官方 x64 `winmm.dll`。已有加载器时需要先检查兼容性，避免覆盖。
+### 1. 准备存档和插件
+
+完整退出游戏，备份自己的存档目录：
+
+```text
+%LOCALAPPDATA%\Pearl Abyss\CD\save
+```
+
+运行上面的 `build.cmd` 生成插件。首次安装还需要从 [Ultimate ASI Loader 官方发布页](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases) 获取 x64 的 `winmm.dll`；仓库本身不附带加载器。已有 ASI Loader 时先检查兼容性，避免直接覆盖。
+
+### 2. 放入游戏目录
+
+把构建出的 `.asi`、`.ini` 和所需加载器放到**游戏 EXE 所在的 `bin64`**。本机路径和安装后的文件结构如下：
+
+```text
+D:\gametool\steam\steamapps\common\Crimson Desert\bin64\
+├── CrimsonDesert.exe
+├── winmm.dll
+├── CohabitationGateExperiment.asi
+└── CohabitationGateExperiment.ini
+```
+
+本机研究时已经安装了这三个附加文件，停止测试后保留在原处，开关已恢复为 `0`。如果直接使用本机现有安装，可从下一步开始。
+
+### 3. 开启补丁
+
+编辑**游戏 `bin64` 中**的 `CohabitationGateExperiment.ini`，将其保存为：
 
 ```ini
 [Experiment]
-Enabled=0
+Enabled=1
 ```
 
-`0` 为观察原版结果；`1` 开启实验覆盖。插件每 5 秒读取配置，旁边的 `.log` 记录检查结果与原函数调用计数。当前本机安装的开关已经恢复为 `0`；用户要求停止实机测试后未继续操作游戏。
+仓库的 `config` 和构建输出默认都是 `Enabled=0`。只修改仓库中的 INI 不会改变已经安装到游戏目录的配置。
 
-完整退出游戏，移走本插件的 `.asi` 和 `.ini` 可卸载。`winmm.dll` 只有在确认由本实验安装、没有其他 Mod 依赖时才一起移走。
+### 4. 进入游戏并与另一个对象交互
+
+1. 正常通过 Steam 启动游戏，载入用于实验的存档。
+2. 如果要观察这项限制是否被解除，需要角色已经有同居对象，再寻找另一个原版允许结婚、且满足好感与剧情条件的 NPC。
+3. 按原版方式与这个 NPC 交互，尝试其恋爱、求婚等流程。插件会自动参与条件判断，不需要在游戏里输入命令或另外按启用快捷键。
+4. **预期效果**是：原先仅因“已有同居对象”而被挡住的交互条件能够通过。好感不足、NPC 不可结婚或剧情未完成等其他限制仍然有效。
+
+本补丁不会自动增加配偶或直接举办婚礼。上述第二个对象的完整结婚流程尚未实测成功；即使恋爱入口出现，也不能据此认定第二次结婚或存档持久化已经可用。
+
+### 5. 确认插件已加载
+
+启动后查看游戏 `bin64` 中生成的 `CohabitationGateExperiment.log`，留意本次启动对应的记录：
+
+```text
+PASS: build/RTTI/evaluator/slot fingerprints and 512 result mapping checks.
+INSTALLED: HasLivingTogether evaluator wrapper. Enabled reloads from INI every 5 seconds.
+STATUS Enabled=1 calls(original satisfied/unsatisfied/unavailable)=... unexpected=0
+```
+
+`INSTALLED` 表示挂钩已安装，`Enabled=1` 表示配置已开启。调用计数增加表示游戏实际评估过该条件，不能单独证明多配偶成功。日志也可能混有启动器或子进程的拒绝加载记录，需结合本次主游戏的 `PASS` / `INSTALLED` 判断。
+
+如果没有生成日志，先检查文件是否放在正确的 `bin64`、ASI Loader 是否加载了插件。如果主游戏版本检查不通过，当前补丁不能用于该版本。
+
+### 6. 临时关闭或卸载
+
+游戏运行期间，把**已安装的 INI** 改回 `Enabled=0` 并保存。插件最多约 5 秒后重新读取；退出当前 NPC 交互并再次交互，可重新触发条件评估。`0` 为观察原版结果，`1` 为开启实验覆盖。
+
+如需卸载，完整退出游戏后移走本插件的 `.asi` 和 `.ini`。`winmm.dll` 只有在确认由本实验安装、没有其他 Mod 依赖时才一起移走。
+
+关闭或卸载只停止后续的条件覆盖，不会自动撤销游玩期间已经写入存档的关系变化。需要回到实验前进度时，应使用事先备份的存档。
 
 ## 适配版本与后续工作
 
