@@ -19,7 +19,7 @@ if errorlevel 1 (
 )
 if not exist build mkdir build
 rem /utf-8 supports Chinese source comments; /MT embeds the C/C++ runtime.
-cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /LD /EHsc src\CohabitationGateExperiment.cpp /Fobuild\CohabitationGateExperiment.obj /link /OUT:build\CohabitationGateExperiment.asi
+cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /LD /EHsc src\CohabitationGateExperiment.cpp src\ConditionTarget.cpp /Fobuild\ /link /OUT:build\CohabitationGateExperiment.asi
 if errorlevel 1 goto failed
 copy /Y config\CohabitationGateExperiment.ini build\CohabitationGateExperiment.ini >nul
 echo Built build\CohabitationGateExperiment.asi. No files installed into the game.

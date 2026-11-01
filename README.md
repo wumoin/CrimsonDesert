@@ -1,82 +1,65 @@
-# Crimson Desert 婚姻限制实验补丁
+# Crimson Desert 婚姻条件实验补丁
 
-这是一个用于研究多配偶可行性的 Windows x64 ASI 插件。**当前只修改“已有同居对象”的条件判断，尚不是经过完整验证的多配偶 Mod。**
+Windows x64 ASI 插件，支持通过 INI 分别忽略好感等级、可结婚判断和已有同居对象限制，并在启动时自动定位对应函数。
 
-目前没有找到原版中可以直接修改的“配偶人数上限”配置项。本项目的 INI 是插件自己的开关，不是游戏原生配置。
+**当前仍是实验补丁，完整多配偶行为尚未验证。** 它覆盖条件判断，不直接增加配偶、好感数值或修改存档格式。
 
-## 原理
+## 原理与配置范围
 
-游戏的部分恋爱入口包含这样的条件：
+部分恋爱入口包含以下条件：
 
 ```text
 人类 && 好感等级 >= 2 && 可结婚 && !HasLivingTogether()
 ```
 
-`HasLivingTogether()` 表示“已有同居对象”。原版已同居时，这条否定条件会阻止继续与其他对象建立关系。
+插件先调用原评估函数，再按配置覆盖有效结果。引擎使用 **0=满足、1=不满足、2=上下文不可用**。
 
-插件通过 ASI Loader 加载到游戏进程，然后替换 `ConditionData_HasLivingTogether` 的一个虚函数表入口。它先调用原函数，再按下面的规则返回结果：
+| INI 子开关 | 对应条件 | 开启时的覆盖 |
+| --- | --- | --- |
+| IgnoreFriendlyLevel | CheckFriendlyLevel | 1 → 0，让好感/信任等级条件通过 |
+| IgnoreMarriageable | IsMarriageable | 1 → 0，让可结婚判断通过 |
+| IgnoreLivingTogether | HasLivingTogether | 0 → 1，让外层“没有同居对象”条件通过 |
 
-| 原函数返回值 | 引擎含义 | 开关关闭 | 开关开启 |
-| --- | --- | --- | --- |
-| 0 | 满足：已有同居对象 | 0 | **1** |
-| 1 | 不满足：没有同居对象 | 1 | 1 |
-| 2 | 上下文不可用 | 2 | 2 |
-| 其他值 | 未知 | 原样 | 原样 |
+返回值 2 和未知值始终保留。总开关关闭或对应子开关关闭时，原样返回。
 
-因此在开关开启时，“已有同居对象”会被条件系统视为不满足，外层 `!HasLivingTogether()` 就有机会通过。插件不改好感、目标 NPC 是否可结婚、恋爱阶段和婚礼写入逻辑。
+**子开关作用于对应条件类型的所有调用，不仅是婚姻菜单。** 忽略好感条件可能改变其他任务或交互的分支。它不会增加实际好感，也不覆盖独立的 CheckAffinityLevel 亲密度条件、种族、剧情或婚姻阶段检查。
 
-这里的返回值不是普通 C++ 布尔值：**0 表示条件满足**。直接把函数改成 `return false` 会得到相反效果。
+## 自动定位与更新兼容性
 
-本插件只改变进程内的虚函数表指针，不改游戏 EXE、资源包或存档文件。退出游戏后该内存修改消失。该条件的所有虚函数调用都会受开关影响，尚未缩小到某个特定求婚菜单。
+插件不再保存类型、虚函数表、评估函数的固定 RVA，也不固定评估槽号：
 
-## 当前验证结果
+1. 在主模块可读区域查找三个目标类的 RTTI 类型名称。
+2. 根据 MSVC x64 RTTI 结构找到各自的主虚函数表。
+3. 从虚函数分派代码解析实际评估槽号。
+4. 检查目标唯一性、内存范围、函数边界与返回值相关的指令模式，再安装挂钩。
 
-- 已编译插件，并在本机游戏中通过版本、RTTI、函数字节和原虚函数槽检查。
-- 已挂载插件、进入游戏场景，并切换 `Enabled=0/1`。
-- 清理前的诊断版本在实际游戏流程中记录到至少 200 次原函数返回“没有同居对象”，没有记录到不可用或未知返回。开关开启期间也记录到了有效调用。
-- **没有取得“已有同居对象”的实际返回，也没有完成第二次结婚、婚礼、保存重载或离婚验证。** 因此尚未在实机中验证最关键的 `0 → 1` 分支。
-
-当前源码已移除测试用输入工具、启动时的结果映射自检、调用计数，以及 PE 时间戳和固定映像大小的版本匹配。保留补丁功能、目标地址范围与函数指纹检查、加载结果及开关状态日志。历史诊断记录保留在文档与日志摘录中。
-
-详细记录见 [验证记录](docs/validation.md)，实现位置见 [源码](src/CohabitationGateExperiment.cpp)。
-
-## 目录
-
-```text
-src/                         插件 C++ 源码
-config/                      默认关闭的 INI
-build.cmd                    构建入口；不会安装或启动游戏
-docs/                        原理、版本依据、验证范围
-evidence/                    本次实验的插件日志摘录
-```
-
-仓库不包含游戏提取资源、第三方存档、存档密钥、解包器源码或 ASI Loader 二进制。
+这样可以处理地址移动和已支持的分派模式下的槽号变化。**不能保证所有未来版本都自动兼容**：类型被移除/改名、编译器改变分派模式、条件语义改变时，仍需人工分析。目标缺失、不唯一或不兼容时拒绝安装全部挂钩。
 
 ## 构建
 
-需要 Windows x64、Visual Studio 的 C++ x64 工具链和 Windows SDK。在仓库目录运行：
+需要 Windows x64、Visual Studio C++ x64 工具链和 Windows SDK。在仓库目录运行：
 
 ```bat
 build.cmd
 ```
 
-输出为 `build\CohabitationGateExperiment.asi` 和默认关闭的 INI。可以在 x64 Native Tools 命令提示符中运行；也可以由脚本通过 `vswhere` 查找工具链。
+输出位于 build，包含 CohabitationGateExperiment.asi 和默认关闭的 INI。脚本不会安装插件或启动游戏。编译使用 /utf-8，INI 注释为中文。
 
-## 使用方法：在游戏中使用补丁
+## 使用方法
 
-### 1. 准备存档和插件
+### 1. 准备存档和加载器
 
-完整退出游戏，备份自己的存档目录：
+完整退出游戏，备份存档目录：
 
 ```text
 %LOCALAPPDATA%\Pearl Abyss\CD\save
 ```
 
-运行上面的 `build.cmd` 生成插件。首次安装还需要从 [Ultimate ASI Loader 官方发布页](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases) 获取 x64 的 `winmm.dll`；仓库本身不附带加载器。已有 ASI Loader 时先检查兼容性，避免直接覆盖。
+构建插件，首次安装还需从 [Ultimate ASI Loader 官方发布页](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases) 获取 x64 winmm.dll。已有加载器时先检查兼容性，避免直接覆盖。
 
-### 2. 放入游戏目录
+### 2. 安装或更新
 
-把构建出的 `.asi`、`.ini` 和所需加载器放到**游戏 EXE 所在的 `bin64`**。本机路径和安装后的文件结构如下：
+将 build 中的 .asi 和 .ini 放到游戏 EXE 所在的 bin64。本机安装路径：
 
 ```text
 D:\gametool\steam\steamapps\common\Crimson Desert\bin64\
@@ -86,56 +69,81 @@ D:\gametool\steam\steamapps\common\Crimson Desert\bin64\
 └── CohabitationGateExperiment.ini
 ```
 
-本机研究时已经安装了这三个附加文件，停止测试后保留在原处，开关已恢复为 `0`。如果直接使用本机现有安装，可从下一步开始。
+使用旧版插件的用户需要完整退出游戏后替换 .asi；只改 INI 不会让旧插件获得自动定位或新增的子开关。仓库里的构建输出不会自动覆盖游戏目录。
 
-### 3. 开启补丁
+### 3. 配置要忽略的条件
 
-编辑**游戏 `bin64` 中**的 `CohabitationGateExperiment.ini`，将其保存为：
+编辑**游戏 bin64 中**的 CohabitationGateExperiment.ini。例如，要忽略三项条件：
 
 ```ini
 [Experiment]
+; 总开关：1 为启用，0 为关闭全部覆盖。
 Enabled=1
+
+[Conditions]
+; 忽略好感/信任等级判断，不增加实际数值。
+IgnoreFriendlyLevel=1
+; 忽略可结婚判断。
+IgnoreMarriageable=1
+; 忽略已有同居对象限制。
+IgnoreLivingTogether=1
 ```
 
-仓库的 `config` 和构建输出默认都是 `Enabled=0`。只修改仓库中的 INI 不会改变已经安装到游戏目录的配置。
+每项可独立设为 0 或 1。总开关必须为 1 才执行覆盖。
 
-### 4. 进入游戏并与另一个对象交互
+仓库默认 Enabled=0、IgnoreFriendlyLevel=0、IgnoreMarriageable=0、IgnoreLivingTogether=1。旧 INI 未提供子开关时也使用这组子开关默认值，以保持原来的同居条件覆盖行为。
 
-1. 正常通过 Steam 启动游戏，载入用于实验的存档。
-2. 如果要观察这项限制是否被解除，需要角色已经有同居对象，再寻找另一个原版允许结婚、且满足好感与剧情条件的 NPC。
-3. 按原版方式与这个 NPC 交互，尝试其恋爱、求婚等流程。插件会自动参与条件判断，不需要在游戏里输入命令或另外按启用快捷键。
-4. **预期效果**是：原先仅因“已有同居对象”而被挡住的交互条件能够通过。好感不足、NPC 不可结婚或剧情未完成等其他限制仍然有效。
+### 4. 在游戏中使用
 
-本补丁不会自动增加配偶或直接举办婚礼。上述第二个对象的完整结婚流程尚未实测成功；即使恋爱入口出现，也不能据此认定第二次结婚或存档持久化已经可用。
+正常通过 Steam 启动并载入实验存档，按原版方式与 NPC 交互，尝试恋爱或求婚流程。插件会自动参与条件评估，不需要输入命令或按额外快捷键。
 
-### 5. 确认插件已加载
+若要观察已有同居对象的限制是否解除，需要已同居进度以及另一个测试对象。若要观察好感条件覆盖，可在好感不达标的实验进度中对照开关前后的交互。
 
-启动后查看游戏 `bin64` 中生成的 `CohabitationGateExperiment.log`，留意本次启动对应的记录：
+游戏运行时约每 5 秒重新读取 INI。修改后退出当前 NPC 交互并再次交互，可重新触发条件评估。实际亲密度、剧情、种族、恋爱阶段以及婚姻写入逻辑仍可能阻止后续流程。
+
+### 5. 查看加载结果
+
+查看 bin64 中的 CohabitationGateExperiment.log。当前版本会输出每个条件的自动定位结果以及进程 ID：
 
 ```text
-PASS: target bounds/RTTI/evaluator/slot fingerprints. Game version matching is disabled.
-INSTALLED: HasLivingTogether evaluator wrapper. Enabled reloads from INI every 5 seconds.
-STATUS Enabled=1
+[pid=...] RESOLVED: CheckFriendlyLevel ... slot=... evaluator RVA=...
+[pid=...] RESOLVED: IsMarriageable ... slot=... evaluator RVA=...
+[pid=...] RESOLVED: HasLivingTogether ... slot=... evaluator RVA=...
+[pid=...] PASS: all three unique RTTI/vtable/dispatch targets and evaluator compatibility checks.
+[pid=...] INSTALLED: three condition evaluator wrappers. INI reloads every 5 seconds.
+[pid=...] STATUS Enabled=1 IgnoreFriendlyLevel=1 IgnoreMarriageable=1 IgnoreLivingTogether=1
 ```
 
-`INSTALLED` 表示挂钩已安装，`Enabled=1` 表示配置已开启；两者不能单独证明多配偶成功。当前版本不再记录每次条件调用的计数。日志也可能混有启动器或子进程的拒绝加载记录，需结合本次主游戏的 `PASS` / `INSTALLED` 判断。
+三个条件全部定位成功才安装。任一槽安装失败会尝试撤回之前的槽，覆盖保持关闭。启动器或其他子进程可能没有这些类型，需根据同一 PID 的记录判断主游戏是否成功安装。
 
-如果没有生成日志，先检查文件是否放在正确的 `bin64`、ASI Loader 是否加载了插件。如果目标地址超出宿主映像范围，或 RTTI、函数字节、虚函数槽不匹配，插件仍会拒绝挂钩并记录具体原因。
+INSTALLED 和 Enabled=1 只能证明挂钩及开关状态，不代表第二次结婚已经验证成功。没有日志时先检查安装目录与 ASI Loader；REFUSED 会写明定位失败的具体原因。
 
-### 6. 临时关闭或卸载
+### 6. 关闭或卸载
 
-游戏运行期间，把**已安装的 INI** 改回 `Enabled=0` 并保存。插件最多约 5 秒后重新读取；退出当前 NPC 交互并再次交互，可重新触发条件评估。`0` 为观察原版结果，`1` 为开启实验覆盖。
+运行期间将总开关改为 Enabled=0 并保存，约 5 秒后恢复原版条件结果。单独关闭某一子开关只停用该条件的覆盖。
 
-如需卸载，完整退出游戏后移走本插件的 `.asi` 和 `.ini`。`winmm.dll` 只有在确认由本实验安装、没有其他 Mod 依赖时才一起移走。
+卸载时完整退出游戏，再移走插件的 .asi 和 .ini。winmm.dll 仅在确认没有其他 Mod 依赖时一起移走。关闭/卸载不会撤销游玩时已经写入存档的关系变化，需要恢复进度时使用事先备份。
 
-关闭或卸载只停止后续的条件覆盖，不会自动撤销游玩期间已经写入存档的关系变化。需要回到实验前进度时，应使用事先备份的存档。
+## 验证范围
 
-## 适配版本与后续工作
+- 旧诊断版本曾带插件进入游戏场景，并记录有效的“没有同居对象”返回。
+- 当前自动定位在更新后的本机 EXE 1.0.0.3462 / Steam build 26356046 上通过了**离线映射验证**，三种评估函数均找到。
+- 模拟虚表移动和槽号变化后可重新定位；类型缺失、关键指令模式变化、重复候选和非游戏宿主均拒绝定位。
+- 中文 INI 读取、16 种总开关/子开关组合、三种条件的结果映射已离线验证。
+- **当前自动定位和新增子开关尚未在运行中的游戏里验证；第二次求婚、婚礼、多人关系保存重载、离婚仍未验证。**
 
-目前的目标地址来自本机 Steam build `26345091`、主菜单版本 `2.04.09`。当前代码不比较游戏版本号、PE 时间戳或固定映像大小；实际映像大小只用于检查读取地址是否越界。
+目前只构建了新版输出，没有自动替换游戏目录的插件或继续实机测试。验证程序不随插件运行，也未加入仓库。
 
-移除版本匹配不会自动适配其他版本：目标 RVA 仍是固定值。如果更新后地址或目标函数发生变化，插件会因目标检查不匹配而拒绝挂钩，需要重新定位。
+详见 [实现说明](docs/design.md)、[验证记录](docs/validation.md) 和 [依赖来源](docs/dependencies.md)。
 
-要完成多配偶 Mod，还需确认婚姻写入是否拒绝或替换旧对象，并验证多人关系能否保存重载，以及同居、召唤、赠礼、离婚分别如何选择对象。底层存在角色列表和“返回第一个符合条件对象”的查询；这提供了研究方向，也意味着只绕过入口条件未必足够。
+## 目录
 
-更具体的技术依据见 [实现说明](docs/design.md)。
+```text
+src/          插件、自动定位器源码及中文注释
+config/       中文注释的默认 INI
+build.cmd     构建入口
+docs/         原理、兼容性与验证说明
+evidence/     历史插件日志摘录
+```
+
+仓库不包含游戏资源、第三方存档、存档密钥、第三方工具源码或 ASI Loader 二进制。

@@ -1,126 +1,160 @@
-// 仅覆盖“已有同居对象”的条件结果；不修改婚姻数据、游戏文件或存档。
-// 不匹配游戏版本号；通过目标地址范围、类型和函数指纹确认挂钩位置。
+// 自动定位三个关系条件，按 INI 覆盖结果；不修改游戏文件或存档数据。
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <cwchar>
+#include "ConditionTarget.h"
 
 namespace {
-// 保留原评估函数的调用约定和单字节返回类型，不能改成普通 bool。
+// 引擎使用 0=满足、1=不满足、2=上下文不可用，不能使用普通 bool 代替。
 using Evaluate = std::uint8_t(__fastcall*)(void*, void*);
-Evaluate original = nullptr;
+constexpr unsigned conditionCount = 3;
+constexpr const wchar_t* keys[] = {L"IgnoreFriendlyLevel", L"IgnoreMarriageable", L"IgnoreLivingTogether"};
+constexpr const char* labels[] = {"CheckFriendlyLevel", "IsMarriageable", "HasLivingTogether"};
+Evaluate originals[conditionCount] = {};
 HMODULE self = nullptr;
-volatile LONG enabled = 0;
+volatile LONG activeConditions = 0;
 wchar_t logPath[MAX_PATH] = {}, iniPath[MAX_PATH] = {};
-// RVA 是相对于游戏模块基址的偏移，进程加载地址变化时仍可定位。
-constexpr std::uintptr_t vtableRva = 0x05cfad38;
-constexpr std::uintptr_t evaluateRva = 0x024896d0;
-constexpr std::uintptr_t typeNameRva = 0x06fbb5d0;
-constexpr unsigned slotNumber = 21;
-constexpr char expectedTypeName[] = ".?AVConditionData_HasLivingTogether@pa@@";
-constexpr unsigned char evaluatorPrefix[] = {
-    0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,
-    0x57,0x48,0x81,0xec,0x80,0x00,0x00,0x00,0x33,0xf6,0x89,0x74,0x24,0x20,
-    0x48,0x8b,0x8a,0x28,0x08,0x00,0x00,0x48
+
+struct Settings {
+    bool enabled = false;
+    LONG requested = 0;
+    LONG active() const { return enabled ? requested : 0; }
 };
 
-// 引擎语义：0 = 条件满足，1 = 不满足，2 = 上下文不可用。
-// 开启时仅将“已有同居对象”映射为不满足，使外层 !HasLivingTogether() 可通过。
-// 不可用和未知结果必须原样保留，避免缺少上下文时错误地放行。
-std::uint8_t transform(std::uint8_t value, bool active) {
-    return active && value == 0 ? 1 : value;
+Settings readSettings() {
+    Settings settings;
+    settings.enabled = GetPrivateProfileIntW(L"Experiment", L"Enabled", 0, iniPath) != 0;
+    for (unsigned i = 0; i < conditionCount; ++i) {
+        // 保持旧配置的行为：缺少新键时只启用同居限制覆盖，好感和可结婚判断不动。
+        const int fallback = i == static_cast<unsigned>(ConditionKind::LivingTogether) ? 1 : 0;
+        if (GetPrivateProfileIntW(L"Conditions", keys[i], fallback, iniPath) != 0)
+            settings.requested |= 1L << i;
+    }
+    return settings;
 }
+
 void log(const char* text) {
-    FILE* f = nullptr;
-    if (_wfopen_s(&f, logPath, L"ab") == 0 && f) {
-        SYSTEMTIME t{}; GetLocalTime(&t);
-        fprintf(f, "%04u-%02u-%02u %02u:%02u:%02u %s\n", t.wYear,t.wMonth,t.wDay,
-            t.wHour,t.wMinute,t.wSecond,text);
-        fclose(f);
+    FILE* file = nullptr;
+    if (_wfopen_s(&file, logPath, L"ab") == 0 && file) {
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        // 多个进程可能加载 ASI；用 PID 区分各自的定位和挂钩结果。
+        fprintf(file, "%04u-%02u-%02u %02u:%02u:%02u [pid=%lu] %s\n",
+            time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond,
+            GetCurrentProcessId(), text);
+        fclose(file);
     }
 }
+
+std::uint8_t transform(std::uint8_t value, ConditionKind kind, bool active) {
+    if (!active) return value;
+    // 仅修改有效的真/假结果，2 和未知值始终保留。
+    if (kind == ConditionKind::LivingTogether) return value == 0 ? 1 : value;
+    return value == 1 ? 0 : value;
+}
+
+template<unsigned index>
 std::uint8_t __fastcall replacement(void* object, void* context) {
-    // 先执行原函数，由游戏负责解析真实上下文；此处只覆盖最终结果。
-    const auto value = original(object, context);
-    // 工作线程会更新开关，评估回调可能在其他线程上运行，使用原子读取。
-    return transform(value, InterlockedCompareExchange(&enabled,0,0) != 0);
+    // 始终先由原函数处理真实上下文，不增加好感、不写关系状态。
+    const auto value = originals[index](object, context);
+    const auto mask = InterlockedCompareExchange(&activeConditions, 0, 0);
+    return transform(value, static_cast<ConditionKind>(index), (mask & (1L << index)) != 0);
 }
-DWORD WINAPI run(void*) {
-    // 配置与日志始终放在插件旁边，不依赖启动游戏时的工作目录。
-    GetModuleFileNameW(self, logPath, MAX_PATH);
-    wchar_t* dot = wcsrchr(logPath,L'.'); if (!dot) return 1;
-    wcscpy_s(dot, MAX_PATH - (dot-logPath), L".log");
-    wcscpy_s(iniPath,logPath); dot = wcsrchr(iniPath,L'.');
-    wcscpy_s(dot, MAX_PATH - (dot-iniPath), L".ini");
-    log("Plugin loaded. Experimental cohabitation gate only; full multi-marriage is unverified.");
-    // 只检查宿主的 PE 格式与地址范围，不要求时间戳或映像大小等于某个版本。
-    const auto image = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
-    const auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(image);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) { log("REFUSED: DOS header."); return 1; }
-    const auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(image + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE ||
-        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
-        log("REFUSED: invalid PE64 header; no patch applied."); return 1;
-    }
-    // 加载器也可能把插件载入其他子进程。读取目标 RVA 前检查实际映像边界，
-    // 避免移除版本匹配后，在较小的宿主映像之外读取内存。
-    const auto imageSize = nt->OptionalHeader.SizeOfImage;
-    constexpr auto slotOffset = vtableRva + slotNumber * sizeof(void*);
-    if (typeNameRva + sizeof(expectedTypeName) > imageSize ||
-        evaluateRva + sizeof(evaluatorPrefix) > imageSize ||
-        slotOffset + sizeof(void*) > imageSize) {
-        log("REFUSED: target offsets outside host image; no patch applied."); return 1;
-    }
-    if (memcmp(image+typeNameRva, expectedTypeName, sizeof(expectedTypeName)) != 0) {
-        log("REFUSED: RTTI fingerprint mismatch; no patch applied."); return 1;
-    }
-    // 不看版本标识，仍需确认地址处确实是预期的评估函数及虚函数槽。
-    if (memcmp(image+evaluateRva,evaluatorPrefix,sizeof(evaluatorPrefix)) != 0) {
-        log("REFUSED: evaluator fingerprint mismatch; no patch applied."); return 1;
-    }
-    auto slot = reinterpret_cast<void**>(image+vtableRva) + slotNumber;
-    if (*slot != image+evaluateRva) {
-        log("REFUSED: vtable slot changed; no patch applied."); return 1;
-    }
-    log("PASS: target bounds/RTTI/evaluator/slot fingerprints. Game version matching is disabled.");
-    // 必须在发布回调指针前保存原入口，并初始化开关；配置缺失时默认关闭。
-    original = reinterpret_cast<Evaluate>(*slot);
-    InterlockedExchange(&enabled,GetPrivateProfileIntW(L"Experiment",L"Enabled",0,iniPath)!=0);
+
+const Evaluate replacements[] = {replacement<0>, replacement<1>, replacement<2>};
+
+bool exchangeSlot(const ConditionTarget& target, void* expected, void* replacementPointer) {
     DWORD prior = 0;
-    // 只临时开放虚函数槽的写权限，不改原评估函数的机器码。
-    if (!VirtualProtect(slot,sizeof(void*),PAGE_READWRITE,&prior)) {
-        log("REFUSED: could not make vtable slot writable."); return 1;
+    if (!VirtualProtect(target.slot, sizeof(void*), PAGE_READWRITE, &prior)) return false;
+    // 其他插件在定位后改过入口时不覆盖它。
+    void* found = InterlockedCompareExchangePointer(target.slot, replacementPointer, expected);
+    DWORD ignored = 0;
+    if (!VirtualProtect(target.slot, sizeof(void*), prior, &ignored))
+        log("WARNING: could not restore vtable page protection.");
+    return found == expected;
+}
+
+DWORD WINAPI run(void*) {
+    // 配置与日志位于插件旁边，不依赖当前工作目录。
+    const DWORD length = GetModuleFileNameW(self, logPath, MAX_PATH);
+    if (!length || length >= MAX_PATH) return 1;
+    wchar_t* dot = wcsrchr(logPath, L'.');
+    if (!dot) return 1;
+    wcscpy_s(dot, MAX_PATH - (dot - logPath), L".log");
+    wcscpy_s(iniPath, logPath);
+    dot = wcsrchr(iniPath, L'.');
+    wcscpy_s(dot, MAX_PATH - (dot - iniPath), L".ini");
+    log("Plugin loaded. Automatic condition discovery; full multi-marriage is unverified.");
+
+    // 全部定位成功才安装；配置暂时关闭的条件也先定位，便于运行中切换。
+    ConditionTarget targets[conditionCount] = {};
+    for (unsigned i = 0; i < conditionCount; ++i) {
+        const char* error = nullptr;
+        bool resolved = false;
+        try {
+            resolved = FindConditionTarget(GetModuleHandleW(nullptr), targets[i], error,
+                static_cast<ConditionKind>(i));
+        } catch (...) { error = "target discovery failed"; }
+        char message[320];
+        if (!resolved) {
+            sprintf_s(message, "REFUSED: %s: %s; no hooks installed.",
+                labels[i], error ? error : "target discovery failed");
+            log(message);
+            return 1;
+        }
+        const auto& target = targets[i];
+        sprintf_s(message, "RESOLVED: %s type RVA=0x%08lx locator RVA=0x%08lx vtable RVA=0x%08lx slot=%u evaluator RVA=0x%08lx",
+            labels[i], target.typeRva, target.locatorRva, target.vtableRva, target.slotIndex, target.evaluatorRva);
+        log(message);
+        originals[i] = reinterpret_cast<Evaluate>(target.evaluator);
     }
-    // 若其他插件在检查之后修改了该槽，原子比较交换会拒绝覆盖它。
-    void* found = InterlockedCompareExchangePointer(slot,reinterpret_cast<void*>(&replacement),
-        reinterpret_cast<void*>(original));
-    DWORD ignored = 0; VirtualProtect(slot,sizeof(void*),prior,&ignored);
-    if (found != reinterpret_cast<void*>(original)) {
-        log("REFUSED: slot changed concurrently."); return 1;
+    log("PASS: all three unique RTTI/vtable/dispatch targets and evaluator compatibility checks.");
+
+    // 安装期间维持原版行为；任一槽安装失败时撤回之前安装的槽。
+    unsigned installed = 0;
+    for (; installed < conditionCount; ++installed)
+        if (!exchangeSlot(targets[installed], targets[installed].evaluator,
+            reinterpret_cast<void*>(replacements[installed]))) break;
+    if (installed != conditionCount) {
+        while (installed > 0) {
+            --installed;
+            if (!exchangeSlot(targets[installed], reinterpret_cast<void*>(replacements[installed]),
+                targets[installed].evaluator))
+                log("WARNING: hook rollback was not completed; condition overrides remain disabled.");
+        }
+        log("REFUSED: could not install all condition hooks; overrides disabled.");
+        return 1;
     }
-    log("INSTALLED: HasLivingTogether evaluator wrapper. Enabled reloads from INI every 5 seconds.");
-    LONG oldEnabled = -1;
+    log("INSTALLED: three condition evaluator wrappers. INI reloads every 5 seconds.");
+    LONG oldRequested = -1;
+    int oldEnabled = -1;
     for (;;) {
-        // 每 5 秒读取安装目录中的 INI，实现运行中切换；仅在开关变化时记日志。
-        const LONG active = GetPrivateProfileIntW(L"Experiment",L"Enabled",0,iniPath)!=0;
-        InterlockedExchange(&enabled,active);
-        if (active!=oldEnabled) {
-            log(active ? "STATUS Enabled=1" : "STATUS Enabled=0");
-            oldEnabled=active;
+        const auto settings = readSettings();
+        // 一个原子位掩码同时发布总开关与三个子开关，回调不会读取半更新配置。
+        InterlockedExchange(&activeConditions, settings.active());
+        if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled) {
+            char message[200];
+            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d",
+                settings.enabled, (settings.requested & 1) != 0, (settings.requested & 2) != 0,
+                (settings.requested & 4) != 0);
+            log(message);
+            oldRequested = settings.requested;
+            oldEnabled = settings.enabled;
         }
         Sleep(5000);
     }
 }
 }
 
-BOOL WINAPI DllMain(HINSTANCE module,DWORD reason,LPVOID) {
-    if (reason==DLL_PROCESS_ATTACH) {
-        // 将文件读写、目标检查与挂钩留给工作线程，避免在 DLL 加载器锁内执行。
-        self=module; DisableThreadLibraryCalls(module);
-        HANDLE thread=CreateThread(nullptr,0,run,nullptr,0,nullptr);
-        // 关闭句柄不会终止工作线程；线程随游戏进程退出，不支持运行中卸载 DLL。
+BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
+    if (reason == DLL_PROCESS_ATTACH) {
+        // 扫描、文件访问和挂钩都在工作线程执行，避免占用 DLL 加载器锁。
+        self = module;
+        DisableThreadLibraryCalls(module);
+        HANDLE thread = CreateThread(nullptr, 0, run, nullptr, 0, nullptr);
+        // 关闭句柄不会终止线程；卸载插件应完整退出游戏。
         if (thread) CloseHandle(thread);
     }
     return TRUE;
