@@ -1,5 +1,5 @@
 // 仅覆盖“已有同居对象”的条件结果；不修改婚姻数据、游戏文件或存档。
-// 地址只适用于已确认的游戏版本，任一指纹不符时停止安装挂钩。
+// 不匹配游戏版本号；通过目标地址范围、类型和函数指纹确认挂钩位置。
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <cstdint>
@@ -15,12 +15,16 @@ HMODULE self = nullptr;
 volatile LONG enabled = 0;
 wchar_t logPath[MAX_PATH] = {}, iniPath[MAX_PATH] = {};
 // RVA 是相对于游戏模块基址的偏移，进程加载地址变化时仍可定位。
-constexpr DWORD buildTimestamp = 0x6ae58024;
-constexpr DWORD buildImageSize = 0x13ee0000;
 constexpr std::uintptr_t vtableRva = 0x05cfad38;
 constexpr std::uintptr_t evaluateRva = 0x024896d0;
 constexpr std::uintptr_t typeNameRva = 0x06fbb5d0;
 constexpr unsigned slotNumber = 21;
+constexpr char expectedTypeName[] = ".?AVConditionData_HasLivingTogether@pa@@";
+constexpr unsigned char evaluatorPrefix[] = {
+    0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,
+    0x57,0x48,0x81,0xec,0x80,0x00,0x00,0x00,0x33,0xf6,0x89,0x74,0x24,0x20,
+    0x48,0x8b,0x8a,0x28,0x08,0x00,0x00,0x48
+};
 
 // 引擎语义：0 = 条件满足，1 = 不满足，2 = 上下文不可用。
 // 开启时仅将“已有同居对象”映射为不满足，使外层 !HasLivingTogether() 可通过。
@@ -51,31 +55,36 @@ DWORD WINAPI run(void*) {
     wcscpy_s(iniPath,logPath); dot = wcsrchr(iniPath,L'.');
     wcscpy_s(dot, MAX_PATH - (dot-iniPath), L".ini");
     log("Plugin loaded. Experimental cohabitation gate only; full multi-marriage is unverified.");
-    // 先确认主模块版本，再读取硬编码 RVA，防止更新后访问错误位置。
+    // 只检查宿主的 PE 格式与地址范围，不要求时间戳或映像大小等于某个版本。
     const auto image = reinterpret_cast<std::uint8_t*>(GetModuleHandleW(nullptr));
     const auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(image);
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) { log("REFUSED: DOS header."); return 1; }
     const auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(image + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.TimeDateStamp != buildTimestamp ||
-        nt->OptionalHeader.SizeOfImage != buildImageSize) {
-        log("REFUSED: unsupported game build; no patch applied."); return 1;
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
+        log("REFUSED: invalid PE64 header; no patch applied."); return 1;
     }
-    if (strcmp(reinterpret_cast<char*>(image+typeNameRva),
-        ".?AVConditionData_HasLivingTogether@pa@@") != 0) {
+    // 加载器也可能把插件载入其他子进程。读取目标 RVA 前检查实际映像边界，
+    // 避免移除版本匹配后，在较小的宿主映像之外读取内存。
+    const auto imageSize = nt->OptionalHeader.SizeOfImage;
+    constexpr auto slotOffset = vtableRva + slotNumber * sizeof(void*);
+    if (typeNameRva + sizeof(expectedTypeName) > imageSize ||
+        evaluateRva + sizeof(evaluatorPrefix) > imageSize ||
+        slotOffset + sizeof(void*) > imageSize) {
+        log("REFUSED: target offsets outside host image; no patch applied."); return 1;
+    }
+    if (memcmp(image+typeNameRva, expectedTypeName, sizeof(expectedTypeName)) != 0) {
         log("REFUSED: RTTI fingerprint mismatch; no patch applied."); return 1;
     }
-    // RTTI、函数机器码和原虚函数槽共同确认目标，避免仅凭版本号误挂钩。
-    const unsigned char prefix[] = {0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,
-        0x57,0x48,0x81,0xec,0x80,0x00,0x00,0x00,0x33,0xf6,0x89,0x74,0x24,0x20,
-        0x48,0x8b,0x8a,0x28,0x08,0x00,0x00,0x48};
-    if (memcmp(image+evaluateRva,prefix,sizeof(prefix)) != 0) {
+    // 不看版本标识，仍需确认地址处确实是预期的评估函数及虚函数槽。
+    if (memcmp(image+evaluateRva,evaluatorPrefix,sizeof(evaluatorPrefix)) != 0) {
         log("REFUSED: evaluator fingerprint mismatch; no patch applied."); return 1;
     }
     auto slot = reinterpret_cast<void**>(image+vtableRva) + slotNumber;
     if (*slot != image+evaluateRva) {
         log("REFUSED: vtable slot changed; no patch applied."); return 1;
     }
-    log("PASS: build/RTTI/evaluator/slot fingerprints.");
+    log("PASS: target bounds/RTTI/evaluator/slot fingerprints. Game version matching is disabled.");
     // 必须在发布回调指针前保存原入口，并初始化开关；配置缺失时默认关闭。
     original = reinterpret_cast<Evaluate>(*slot);
     InterlockedExchange(&enabled,GetPrivateProfileIntW(L"Experiment",L"Enabled",0,iniPath)!=0);
@@ -108,7 +117,7 @@ DWORD WINAPI run(void*) {
 
 BOOL WINAPI DllMain(HINSTANCE module,DWORD reason,LPVOID) {
     if (reason==DLL_PROCESS_ATTACH) {
-        // 将文件读写、版本检查与挂钩留给工作线程，避免在 DLL 加载器锁内执行。
+        // 将文件读写、目标检查与挂钩留给工作线程，避免在 DLL 加载器锁内执行。
         self=module; DisableThreadLibraryCalls(module);
         HANDLE thread=CreateThread(nullptr,0,run,nullptr,0,nullptr);
         // 关闭句柄不会终止工作线程；线程随游戏进程退出，不支持运行中卸载 DLL。
