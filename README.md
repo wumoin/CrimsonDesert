@@ -2,11 +2,11 @@
 
 为《Crimson Desert》提供可配置的恋爱与婚姻条件覆盖，支持继续与其他对象结婚、选择当前伴侣，以及实验性的全员召唤 / 收回。Windows x64 ASI 插件，配置和源码注释为中文。
 
-**当前为实验版本。** 已确认多条婚姻可以保存；v0.1.1 实机回归确认两位伴侣同时出场，以及一次指定对象离婚后其他关系保留。完整婚礼、跟随、剧情和所有 NPC 的交互仍未完成验证。
+
 
 [下载 v0.1.2](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.2) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
 
-当前源码与发布附件为 **v0.1.2 实验版**，在 v0.1.1 的实例与离婚修复上增加读档后的多人同行恢复，尚待实机验证。更新时退出游戏并用新 `.asi` 替换旧插件，保留现有 INI 即可。此前修复见[修复说明](docs/fixes-v0.1.1.md)。
+当前源码与发布附件为 **v0.1.2 实验版**，在 v0.1.1 的实例与离婚修复上增加读档后的多人同行恢复。更新时退出游戏并用新 `.asi` 替换旧插件，保留现有 INI 即可。此前修复见[修复说明](docs/fixes-v0.1.1.md)。
 
 ## 功能
 
