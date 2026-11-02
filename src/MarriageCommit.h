@@ -9,6 +9,7 @@ using PartnerSpawnControl = void*(__fastcall*)(void*, void*, bool, std::uint16_t
 using PluginLog = void(*)(const char*);
 
 using NativePartnerCreate = void*(__fastcall*)(void*, DWORD*, std::uint16_t, DWORD*, const DWORD*, bool);
+using NativePartnerRestore = void*(__fastcall*)(void*, DWORD*);
 using NativeRequestHandler = void*(__fastcall*)(void*, DWORD*, void*);
 using NativeDivorceCurrent = void*(__fastcall*)(void*, DWORD*);
 using NativeDivorceByKey = void*(__fastcall*)(void*, DWORD*, std::uint16_t, const DWORD*);
@@ -27,6 +28,8 @@ struct PartnerRuntimeTarget {
     NativeRequestHandler stepRequest = nullptr;
     NativeRequestHandler resetRequest = nullptr, dialogueEndRequest = nullptr;
     NativeDivorceByKey divorceByKey = nullptr;
+    NativePartnerRestore restore = nullptr;
+    DWORD restoreRva = 0;
 };
 
 // 从原版函数恢复关系表与实例布局；不使用固定游戏 RVA。
@@ -74,6 +77,9 @@ void SetPartnerRuntimeLog(PluginLog log);
 bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, const char*& error,
     void* livingEvaluator = nullptr);
 bool FindPartnerRuntimeTarget(HMODULE module, MarriageCommitTarget& target, const char*& error);
+// 独立定位读档恢复入口；不兼容时只关闭恢复扩展，保留现有功能。
+bool FindPartnerRestoreTarget(HMODULE module, MarriageCommitTarget& target, const char*& error);
+bool IsPartnerRestoreHookReady();
 
 // 先调用原检查；失败时只在私有副本中排除当前角色的现有伴侣后重新检查。
 // 原组件、NPC、存档均不在此处写入，真正的状态更新仍由原版提交代码完成。

@@ -4,9 +4,9 @@
 
 **当前为实验版本。** 已确认多条婚姻可以保存；v0.1.1 实机回归确认两位伴侣同时出场，以及一次指定对象离婚后其他关系保留。完整婚礼、跟随、剧情和所有 NPC 的交互仍未完成验证。
 
-[下载 v0.1.1](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.1) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
+[下载 v0.1.2](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.2) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
 
-当前源码为 **v0.1.1 修复版**，新增实例复用、重复实例收回及按交互目标离婚保护。旧 v0.1.0 附件不包含这些修复，使用时以加载日志首行版本为准。修复的范围与验证步骤见[本轮修复说明](docs/fixes-v0.1.1.md)。
+当前源码与发布附件为 **v0.1.2 实验版**，在 v0.1.1 的实例与离婚修复上增加读档后的多人同行恢复，尚待实机验证。更新时退出游戏并用新 `.asi` 替换旧插件，保留现有 INI 即可。此前修复见[修复说明](docs/fixes-v0.1.1.md)。
 
 ## 功能
 
@@ -20,6 +20,7 @@
 | 婚姻提交覆盖 | 提交新婚姻时，排除自己已有其他已婚对象这一阻碍 |
 | 当前伴侣选择 | 自动优先选择新婚对象，或手动指定一位已有伴侣 |
 | 全员召唤 / 收回 | 在召唤 / 收回结婚对象时，同步召唤 / 收回所有已婚对象 |
+| 读档恢复同行 | 分别读取各位已婚伴侣保存的同行状态，只恢复已选择同行的对象 |
 
 
 ## 运行要求与兼容范围
@@ -34,11 +35,11 @@
 
 ### 1. 下载发布文件
 
-打开 [v0.1.1 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.1)，下载附件：
+打开 [v0.1.2 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.2)，下载附件：
 
-- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/CohabitationGateExperiment.asi)：插件。
-- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/CohabitationGateExperiment.ini)：配置。
-- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.1/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2。
+- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.2/CohabitationGateExperiment.asi)：插件。
+- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.2/CohabitationGateExperiment.ini)：配置。
+- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.2/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2。
 
 
 ### 2. 退出游戏并备份存档
@@ -97,7 +98,7 @@ IgnoreTribe=1
 IgnoreExistingMarriageOnCommit=1
 ; 0 自动选择当前伴侣；其他数值指定已婚对象编号。
 PreferredPartnerKey=0
-; 设为 1 后，召唤或收回当前伴侣时，也处理其他已婚伴侣。
+; 全员召唤或收回；读档时恢复已设为同行的伴侣。
 SpawnAllPartners=1
 ```
 
@@ -115,7 +116,9 @@ SpawnAllPartners=1
 | `Conditions` | `IgnoreTribe` | `1` | 绕过种族条件，实际种族不变 |
 | `Relationships` | `IgnoreExistingMarriageOnCommit` | `1` | 提交婚姻时排除自己现有婚姻的阻碍，并启用当前伴侣选择 |
 | `Relationships` | `PreferredPartnerKey` | `0` | `0` 自动选择；非零值指定当前角色的一位真实已婚对象 |
-| `Relationships` | `SpawnAllPartners` | `1` | 触发原版召唤 / 收回时，把同样动作扩展到其他真实已婚对象 |
+| `Relationships` | `SpawnAllPartners` | `1` | 全员召唤 / 收回，并在读档时分别恢复已保存为同行的伴侣 |
+
+多人同行恢复需要 `Enabled=1`、`SpawnAllPartners=1`，并在加载日志中看到 `PARTNER RESTORE HOOK INSTALLED` 和 `PartnerRestoreActive=1`。先对需要跟随的伴侣分别选择“结伴同行”并保存，再读档；选择“等待”的对象保持原状态。读档后日志 `PARTNER RESTORE` 中的 `followRequests` 表示原版请求恢复同行的人数，实际出场和跟随仍需游戏内确认。入口无法兼容时会记录 `PARTNER RESTORE UNAVAILABLE` 并保留原版恢复行为。游戏已读档后才开启开关，需要重新读档才能触发。
 
 表中是发布 INI 的默认值。删除配置文件或键时，插件仍使用关闭兜底（仅同居子开关缺省为 `1`），请保留完整配置。
 
@@ -124,11 +127,12 @@ SpawnAllPartners=1
 
 ## 实现原理
 
-补丁处理三个环节，实际婚姻状态仍由游戏原版流程写入：
+补丁处理四个环节，实际婚姻状态仍由游戏原版流程写入：
 
 1. **条件判断**：通过 MSVC RTTI 查找五类条件的虚函数表，解析实际评估槽，再替换进程内入口。保留上下文不可用和未知返回值。
 2. **婚姻提交与当前对象**：用 MinHook 挂钩原资格检查。仅在原检查失败、且开启对应选项时，构造排除当前角色已有婚姻的私有副本重新检查；不改原关系数组。跟踪真实写入路径，并且只选择已存在的真实已婚记录。
 3. **出场与离婚保护**：读取当前玩家的角色注册表，按对象键、所属角色和实例核对出场。在原游戏调用线程中修复运行时实例关联，调用原版动作并保留原生回执；离婚使用明确交互目标及独立记录快照。实例关联字段会改变，婚姻状态仍交给原版写入。
+4. **读档恢复同行**：临时逐一指定真实已婚对象，重用原版恢复函数读取各自保存的同行标志；不改写同行标志，不强制等待中的对象跟随。
 
 好感 / 亲密度覆盖使用虚拟等级 `127` 重新计算原来的比较，保留 `>=`、`<` 等方向，避免成功与拒绝分支同时成立。它不会增加实际数值，也不是让所有比较无条件成立，例如“等级恰好等于 3”仍不成立。
 

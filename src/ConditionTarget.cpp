@@ -949,3 +949,129 @@ bool FindPartnerRuntimeTarget(HMODULE module, MarriageCommitTarget& target, cons
     for(const auto& request:requests)if(!requestHandler(image,request.name,*request.destination)){error=request.reason;return false;}
     error = nullptr; return true;
 }
+
+namespace {
+// 恢复入口为 (组件, DWORD* 结果)。当前函数族把结果指针保存在 R14，
+// 这里只接受 DWORD 写入与最终返回，不能把未知大小的结果结构放进栈上。
+bool restoreOutputIsDword(const Image& image, DWORD begin, DWORD length) {
+    bool saved = false, returned = false;
+    unsigned saves = 0;
+    for (DWORD at = 0; at < length;) {
+        unsigned char bytes[16]{};
+        std::memcpy(bytes, image.base + begin + at, (std::min)(DWORD{15}, length - at));
+        hde64s ins{}; const auto count = hde64_disasm(bytes, &ins);
+        if (!count || (ins.flags & F_ERROR) || count > length - at) return false;
+        const unsigned reg = ins.modrm_reg + (ins.rex_r ? 8u : 0u);
+        const unsigned rm = ins.modrm_rm + (ins.rex_b ? 8u : 0u);
+        const bool modrm = (ins.flags & F_MODRM) != 0;
+        if (modrm && ins.modrm_mod == 3 && ins.opcode == 0x8b && ins.rex_w && reg == 14 && rm == 2) {
+            if (++saves != 1) return false;
+            saved = true; at += count; continue;
+        }
+        if (!saved) {
+            if (ins.opcode == 0xe8 || ins.opcode == 0xe9 || ins.opcode == 0xeb || ins.opcode == 0xff) return false;
+            if (modrm && ins.modrm_mod != 3 && ins.opcode == 0x89 && reg == 2) return false;
+        } else {
+            if (ins.opcode >= 0xa4 && ins.opcode <= 0xaf) return false;
+            if (modrm && ins.modrm_mod == 3 && (reg == 14 || rm == 14)) {
+                if (ins.opcode == 0x8b && ins.rex_w && reg == 0 && rm == 14 && at + 96 >= length) returned = true;
+                else return false;
+            }
+            if (modrm && ins.modrm_mod != 3) {
+                const bool sib = (ins.flags & F_SIB) != 0;
+                const unsigned base = sib ? ins.sib_base + (ins.rex_b ? 8u : 0u) : rm;
+                if (reg == 14 && !(returned && ins.opcode == 0x8b && base == 11)) return false;
+                if (sib && ins.sib_index + (ins.rex_x ? 8u : 0u) == 14) return false;
+                if (base == 14) {
+                    std::int64_t offset = 0;
+                    if (ins.flags & F_DISP8) offset = static_cast<std::int8_t>(ins.disp.disp8);
+                    else if (ins.flags & F_DISP32) offset = static_cast<std::int32_t>(ins.disp.disp32);
+                    if (sib || ins.p_seg || ins.p_67 || ins.rex_w || ins.opcode != 0x89 || offset != 0) return false;
+                }
+            }
+            if (returned && (ins.opcode == 0xe8 || ins.opcode == 0xff)) return false;
+        }
+        if (ins.opcode == 0xc3) return saved && returned && saves == 1;
+        at += count;
+    }
+    return false;
+}
+}
+
+bool FindPartnerRestoreTarget(HMODULE module, MarriageCommitTarget& target, const char*& error) {
+    auto& rt = target.runtime; rt.restore = nullptr; rt.restoreRva = 0;
+    Image image; DWORD createRva = 0;
+    if (!image.open(module) || !target.lookup || !rt.create ||
+        !image.pointerRva(reinterpret_cast<std::uintptr_t>(rt.create), createRva)) {
+        error = "partner restore dependencies unavailable"; return false;
+    }
+    // 从已验证的创建入口反查直接调用者，排除手动召唤控制器。
+    // 恢复分支必须同时查询当前伴侣、读取保存的同行标记，并把该标记传入创建函数。
+    // 不硬编码入口 RVA 或存档字段偏移；寄存器/调用约定变化时停止这一项扩展。
+    std::vector<DWORD> visited;
+    unsigned matches = 0;
+    for (const auto& span : image.spans) {
+        if (!span.executable) continue;
+        DWORD at = span.begin;
+        while (at < span.end && span.end - at >= 5) {
+            const auto hit = static_cast<const unsigned char*>(std::memchr(image.base + at, 0xe8, span.end - at - 4));
+            if (!hit) break;
+            at = static_cast<DWORD>(hit - image.base) + 1;
+            std::int32_t relative = 0; std::memcpy(&relative, hit + 1, 4);
+            if (static_cast<std::int64_t>(at) + 4 + relative != createRva) continue;
+            DWORD begin = 0, size = 0;
+            if (!image.functionRange(at - 1, begin, size) || begin == target.spawnRva ||
+                std::find(visited.begin(), visited.end(), begin) != visited.end()) continue;
+            visited.push_back(begin);
+            const auto calls = callsIn(image, begin, size);
+            if (std::count_if(calls.begin(), calls.end(), [&](const auto& c) { return c.second == target.lookupRva; }) != 1 ||
+                std::count_if(calls.begin(), calls.end(), [&](const auto& c) { return c.second == createRva; }) != 1) continue;
+            const DWORD lookupCall = std::find_if(calls.begin(), calls.end(), [&](const auto& c) { return c.second == target.lookupRva; })->first;
+            const DWORD createCall = std::find_if(calls.begin(), calls.end(), [&](const auto& c) { return c.second == createRva; })->first;
+            if (lookupCall >= createCall) continue;
+            constexpr unsigned char args[] = {0x4c,0x8b,0xf2,0x4c,0x8b,0xe9,0x33,0xf6,0x48,0x8b,0x59,0x08};
+            constexpr unsigned char flagRead[] = {0x44,0x0f,0xb6,0x7b};
+            constexpr unsigned char flagTest[] = {0x45,0x84,0xff};
+            constexpr unsigned char partyArg[] = {0x44,0x88,0x7c,0x24,0x28};
+            unsigned flagReads = 0, flagTests = 0, partyArgs = 0;
+            bool skipsCreation = false;
+            for (DWORD i = 0; i < size;) {
+                unsigned char bytes[16]{}; hde64s ins{};
+                std::memcpy(bytes, image.base + begin + i, (std::min)(DWORD{15}, size - i));
+                const auto n = hde64_disasm(bytes, &ins);
+                if (!n || (ins.flags & F_ERROR) || n > size - i) break;
+                const DWORD site = begin + i;
+                if (site > lookupCall && site < createCall) {
+                    if (n == 5 && !std::memcmp(bytes, flagRead, sizeof(flagRead)) && bytes[4] < 128) ++flagReads;
+                    if (flagReads == 1 && n == sizeof(flagTest) && !std::memcmp(bytes, flagTest, sizeof(flagTest))) {
+                        ++flagTests;
+                        // 保存标记为 false 时，JE 必须跳过创建调用，而非只影响其他逻辑。
+                        const DWORD next = i + n;
+                        std::int64_t destination = -1;
+                        if (next + 2 <= size && image.base[begin + next] == 0x74)
+                            destination = static_cast<std::int64_t>(begin) + next + 2 + static_cast<std::int8_t>(image.base[begin + next + 1]);
+                        else if (next + 6 <= size && image.base[begin + next] == 0x0f && image.base[begin + next + 1] == 0x84) {
+                            std::int32_t rel = 0; std::memcpy(&rel, image.base + begin + next + 2, 4);
+                            destination = static_cast<std::int64_t>(begin) + next + 6 + rel;
+                        }
+                        skipsCreation = destination >= createCall + 5 && destination < static_cast<std::int64_t>(begin) + size;
+                    }
+                    if (flagTests == 1 && n == sizeof(partyArg) && !std::memcmp(bytes, partyArg, sizeof(partyArg)) &&
+                        createCall - site <= 64) ++partyArgs;
+                }
+                if (ins.opcode == 0xc3) break;
+                i += n;
+            }
+            if (!codeHas(image, begin, (std::min)(size, DWORD{64}), args, sizeof(args)) ||
+                flagReads != 1 || flagTests != 1 || partyArgs != 1 || !skipsCreation ||
+                !restoreOutputIsDword(image, begin, size)) continue;
+            if (++matches > 1) {
+                rt.restore = nullptr; rt.restoreRva = 0;
+                error = "partner restore caller ambiguous"; return false;
+            }
+            rt.restore = reinterpret_cast<NativePartnerRestore>(image.base + begin); rt.restoreRva = begin;
+        }
+    }
+    if (matches != 1) { error = "partner restore caller or saved-party contract incompatible"; return false; }
+    error = nullptr; return true;
+}

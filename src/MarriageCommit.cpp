@@ -26,12 +26,14 @@ MarriageEligibility originalEligibility = nullptr;
 LivingPartnerLookup originalLookup = nullptr;
 PartnerSpawnControl originalSpawnControl = nullptr;
 NativePartnerCreate originalPartnerCreate = nullptr;
+NativePartnerRestore originalPartnerRestore = nullptr;
 NativeDivorceCurrent originalDivorceCurrent = nullptr;
 NativeDivorceByKey originalDivorceByKey = nullptr;
 NativeRequestHandler originalStepRequest = nullptr;
 NativeRequestHandler originalResetRequest = nullptr, originalDialogueEndRequest = nullptr;
 bool spawnHookReady = false;
 bool runtimeHookReady = false;
+bool restoreHookReady = false;
 volatile LONG spawnAllEnabled = 0;
 volatile LONG relationshipGuardsEnabled = 0;
 PluginLog logger = nullptr;
@@ -60,6 +62,15 @@ struct SpawnRouteScope {
     SpawnRoute* previous;
     explicit SpawnRouteScope(SpawnRoute& route):previous(spawnRoute){spawnRoute=&route;}
     ~SpawnRouteScope(){spawnRoute=previous;}
+};
+// 每次恢复只临时指定一个对象。创建参数由原版读取存档后决定，
+// 此处只记录它是否确实请求了同行，不能把“检查过”当成已恢复跟随。
+struct RestorePass { bool followRequested = false, reused = false; };
+thread_local RestorePass* restorePass = nullptr;
+struct RestorePassScope {
+    RestorePass* previous;
+    explicit RestorePassScope(RestorePass& pass):previous(restorePass){restorePass=&pass;}
+    ~RestorePassScope(){restorePass=previous;}
 };
 struct InteractionTarget { std::uintptr_t owner = 0; DWORD ownerId = 0, key = 0, actorId = 0; };
 InteractionTarget interactionTargets[64]{};
@@ -383,10 +394,12 @@ void* __fastcall replacementDivorceCurrent(void* component, DWORD* result) {
 
 void* __fastcall replacementPartnerCreate(void* component, DWORD* result, std::uint16_t playable,
     DWORD* actorId, const DWORD* npcKey, bool party) {
+    if (restorePass && party) restorePass->followRequested = true;
     DWORD key = 0, reused = 0, status = installedTarget.runtime.unavailableResult;
     if (InterlockedCompareExchange(&relationshipGuardsEnabled, 0, 0) && copyReadable(&key, npcKey, 4)) {
         try {
             if (ReuseExistingPartnerActor(installedTarget, component, playable, key, reused, status)) {
+                if (restorePass && !status) restorePass->reused = true;
                 if (result) *result = status; if (!status && actorId) *actorId = reused; return result;
             }
         } catch (...) {
@@ -413,6 +426,64 @@ void* __fastcall replacementSpawnControl(void* component,void* result,bool spawn
         if(result)std::memcpy(result,&error,4);
         if(logger)logger("PARTNER ACTION BLOCKED: reconciliation could not complete; no blind retry.");
         return result;
+    }
+}
+
+void* __fastcall replacementPartnerRestore(void* component, DWORD* result) {
+    // 恢复与手动召唤共用 SpawnAllPartners，但入口不同；不向工作线程投递游戏调用。
+    if (!component || !result || !InterlockedCompareExchange(&spawnAllEnabled, 0, 0) || spawnRoute || restorePass)
+        return originalPartnerRestore(component, result);
+    void* primaryReturned = nullptr;
+    bool primaryComplete = false;
+    try {
+        std::uintptr_t owner = 0; DWORD ownerId = 0; void* contents = nullptr; std::uint16_t playable = 0;
+        if (!copyReadable(&owner, static_cast<std::uint8_t*>(component) + 8, 8) ||
+            !interactionOwner(&owner, owner, ownerId, contents, playable) || contents != component)
+            return originalPartnerRestore(component, result);
+        std::vector<NativePartnerRecord> partners;
+        if (!readMarriedRecords(installedTarget, component, playable, partners) || partners.empty())
+            return originalPartnerRestore(component, result);
+
+        DWORD primaryKey = 0; unsigned checked = 0, followRequests = 0, reused = 0, errors = 0;
+        const auto restoreOne = [&](DWORD forcedKey, DWORD* output, DWORD& selectedKey) {
+            SpawnRoute route{playable, component, forcedKey}; SpawnRouteScope routeScope(route);
+            RestorePass pass{}; RestorePassScope passScope(pass);
+            void* returned = originalPartnerRestore(component, output);
+            selectedKey = route.selectedKey;
+            ++checked; if (pass.followRequested) ++followRequests; if (pass.reused) ++reused;
+            DWORD code = installedTarget.runtime.unavailableResult;
+            copyReadable(&code, output, sizeof(code));
+            if (code) ++errors;
+            if (logger) {
+                char text[256];
+                sprintf_s(text, "PARTNER RESTORE CHECK: key=%lu requestedKey=%lu followRequested=%d reused=%d result=0x%08lx; native saved-party decision preserved.",
+                    selectedKey, forcedKey, pass.followRequested, pass.reused, code); logger(text);
+            }
+            return returned;
+        };
+        // 首次调用保留原版/配置选中的对象、返回指针和错误码。
+        // 后续只临时切换查询结果，仍由原版读取各自 _isParty；等待中的对象不会被强制同行。
+        primaryReturned = restoreOne(0, result, primaryKey);
+        primaryComplete = true;
+        for (const auto& partner : partners) {
+            if (partner.key == primaryKey) continue;
+            // 原调用可能更新缓存，不能跨调用使用先前快照中的记录地址。
+            unsigned count = 0;
+            if (!marriedRecord(installedTarget, component, playable, partner.key, count)) continue;
+            DWORD extraResult = installedTarget.runtime.unavailableResult, selectedKey = 0;
+            restoreOne(partner.key, &extraResult, selectedKey);
+        }
+        if (logger) {
+            char text[240];
+            sprintf_s(text, "PARTNER RESTORE: playable=%u primaryKey=%lu marriedRecords=%u checked=%u followRequests=%u reused=%u errors=%u; native calls returned, following requires gameplay verification.",
+                static_cast<unsigned>(playable), primaryKey, static_cast<unsigned>(partners.size()), checked, followRequests, reused, errors); logger(text);
+        }
+        return primaryReturned;
+    } catch (...) {
+        // 一部分对象可能已经恢复，异常后不能重跑首个原版动作而制造副本。
+        if (!primaryComplete) *result = installedTarget.runtime.unavailableResult;
+        if (logger) logger("PARTNER RESTORE INCOMPLETE: no blind retry after partial native work.");
+        return primaryComplete ? primaryReturned : result;
     }
 }
 }
@@ -597,11 +668,33 @@ bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingE
         logger("PARTNER SPAWN HOOK INSTALLED: instance reconciliation, native creation reuse and per-partner actions.");
         sprintf_s(message,"DIVORCE GUARD INSTALLED: RVA=0x%08lx; explicit interaction target and stable result snapshot.",rt.divorceRva);logger(message);
     }
+    // 恢复入口是独立的可选扩展。新版本无法识别该入口或安装失败时，
+    // 原版恢复与此前已安装的九个挂钩保持可用，不撤销整组关系功能。
+    bool restoreFound = false;
+    try { restoreFound = FindPartnerRestoreTarget(module, installedTarget, error); }
+    catch (...) { error = "partner restore discovery failed"; }
+    if (restoreFound) {
+        const auto address = reinterpret_cast<void*>(rt.restore);
+        status = MH_CreateHook(address, reinterpret_cast<void*>(&replacementPartnerRestore), reinterpret_cast<void**>(&originalPartnerRestore));
+        if (status == MH_OK) {
+            status = MH_EnableHook(address);
+            if (status != MH_OK) { MH_DisableHook(address); MH_RemoveHook(address); }
+            else restoreHookReady = true;
+        }
+        if (!restoreHookReady) error = MH_StatusToString(status);
+    }
+    if (logger) {
+        if (restoreHookReady)
+            sprintf_s(message, "PARTNER RESTORE HOOK INSTALLED: RVA=0x%08lx; per-partner native saved-party restoration.", rt.restoreRva);
+        else sprintf_s(message, "PARTNER RESTORE UNAVAILABLE: %s; native single-partner restore retained.", error ? error : "unknown layout");
+        logger(message);
+    }
     return true;
 }
 
 bool IsPartnerSpawnHookReady(){return spawnHookReady;}
 bool IsPartnerRuntimeReady(){return runtimeHookReady;}
+bool IsPartnerRestoreHookReady(){return restoreHookReady;}
 
 void SetMarriageCommitOverride(bool active,DWORD preferredPartnerKey,bool spawnAll,bool relationshipGuards) {
     InterlockedExchange(&relationshipGuardsEnabled,relationshipGuards && runtimeHookReady ? 1 : 0);

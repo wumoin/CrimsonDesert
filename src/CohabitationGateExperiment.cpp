@@ -125,7 +125,7 @@ DWORD WINAPI run(void*) {
     wcscpy_s(iniPath, logPath);
     dot = wcsrchr(iniPath, L'.');
     wcscpy_s(dot, MAX_PATH - (dot - iniPath), L".ini");
-    log("Plugin loaded. v0.1.1: automatic conditions, instance reconciliation and interaction-bound divorce; full multi-marriage is unverified.");
+    log("Plugin loaded. v0.1.2: native saved-party restoration, instance reconciliation and interaction-bound divorce; full multi-marriage is unverified.");
 
     // 全部定位成功才安装；配置暂时关闭的条件也先定位，便于运行中切换。
     for (unsigned i = 0; i < conditionCount; ++i) {
@@ -185,11 +185,11 @@ DWORD WINAPI run(void*) {
             static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit || settings.preferredPartnerKey!=oldPartnerKey ||
             static_cast<int>(settings.spawnAllPartners)!=oldSpawn) {
             char message[512];
-            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d IgnoreExistingMarriageOnCommit=%d CommitOverrideActive=%d PreferredPartnerKey=%lu SpawnAllPartners=%d SpawnAllActive=%d RelationshipGuardsActive=%d",
+            sprintf_s(message, "STATUS Enabled=%d IgnoreFriendlyLevel=%d IgnoreMarriageable=%d IgnoreLivingTogether=%d IgnoreAffinityLevel=%d IgnoreTribe=%d IgnoreExistingMarriageOnCommit=%d CommitOverrideActive=%d PreferredPartnerKey=%lu SpawnAllPartners=%d SpawnAllActive=%d RelationshipGuardsActive=%d PartnerRestoreActive=%d",
                 settings.enabled, (settings.requested & 1) != 0, (settings.requested & 2) != 0,
                 (settings.requested & 4) != 0, (settings.requested & 8) != 0,
                 (settings.requested & 16) != 0, settings.ignoreExistingMarriageOnCommit, commitActive,settings.preferredPartnerKey,
-                settings.spawnAllPartners,spawnActive,settings.enabled && IsPartnerRuntimeReady());
+                settings.spawnAllPartners,spawnActive,settings.enabled && IsPartnerRuntimeReady(),spawnActive && IsPartnerRestoreHookReady());
             log(message);
             oldRequested = settings.requested;
             oldEnabled = settings.enabled;
