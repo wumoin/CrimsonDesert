@@ -1,5 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include "MarriageCommit.h"
+#include "BeautyPicker.h"
 #include "../vendor/minhook/include/MinHook.h"
 #include <cstdio>
 #include <cstring>
@@ -36,6 +37,8 @@ bool runtimeHookReady = false;
 bool restoreHookReady = false;
 volatile LONG spawnAllEnabled = 0;
 volatile LONG relationshipGuardsEnabled = 0;
+struct BeautyRoute {void* component;std::uint16_t playable;DWORD key;};
+thread_local BeautyRoute* beautyRoute=nullptr;
 PluginLog logger = nullptr;
 volatile LONG enabled = 0;
 volatile LONG reported = 0;
@@ -412,6 +415,16 @@ void* __fastcall replacementPartnerCreate(void* component, DWORD* result, std::u
 void* __fastcall replacementLookup(void* component,std::uint16_t playable) {
     if (_ReturnAddress() == installedTarget.runtime.divorceLookupReturn && InterlockedCompareExchange(&relationshipGuardsEnabled,0,0))
         return divorceRoute && divorceRoute->component == component && divorceRoute->playable == playable ? divorceRoute->snapshot : nullptr;
+    if (_ReturnAddress()==installedTarget.beautyLookupReturn && InterlockedCompareExchange(&relationshipGuardsEnabled,0,0)) {
+        const auto key=beautyRoute && beautyRoute->component==component && beautyRoute->playable==playable ? beautyRoute->key : 0;
+        if(key) {
+            unsigned total=0;
+            void* record=marriedRecord(installedTarget,component,playable,key,total);
+            if(logger) {char message[192];sprintf_s(message,"BEAUTY TARGET: playable=%u key=%lu marriedCandidates=%u verified=%d; scoped native beauty query.",static_cast<unsigned>(playable),key,total,record!=nullptr);logger(message);}
+            // 选择的对象失效时不能静默改为另一位伴侣。
+            return record;
+        }
+    }
     return EvaluateLivingPartnerSelection(installedTarget,originalLookup,component,playable,
         InterlockedCompareExchange(&enabled,0,0)!=0);
 }
@@ -624,6 +637,9 @@ bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingE
         if(logger)logger(message);
         return false;
     }
+    if(FindBeautyPartnerLookup(module,installedTarget)) {
+        if(logger)logger("BEAUTY ROUTE RESOLVED: isolated native beauty lookup caller.");
+    } else if(logger)logger("BEAUTY ROUTE UNAVAILABLE: original beauty lookup caller not uniquely verified.");
     sprintf_s(message,"COMMIT RESOLVED: eligibility RVA=0x%08lx arrays=0x%x stride=0x%x state=0x%x playable=0x%x",
         installedTarget.functionRva,installedTarget.arrayOffset,installedTarget.recordStride,
         installedTarget.stateOffset,installedTarget.playableOffset);
@@ -689,7 +705,28 @@ bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingE
         else sprintf_s(message, "PARTNER RESTORE UNAVAILABLE: %s; native single-partner restore retained.", error ? error : "unknown layout");
         logger(message);
     }
+    InstallBeautyPicker(module,installedTarget,logger);
     return true;
+}
+
+bool ReadBeautyPartners(void* component,std::uint16_t playable,std::vector<BeautyPartnerOption>& options) {
+    options.clear();std::vector<NativePartnerRecord> records;
+    if(!readMarriedRecords(installedTarget,component,playable,records))return false;
+    for(const auto& record:records) {
+        std::uint16_t character=0xffff;
+        if(!copyReadable(&character,reinterpret_cast<void*>(record.address+0xc),2))return false;
+        options.push_back({record.key,character});
+    }
+    return true;
+}
+bool VerifyBeautyPartner(void* component,std::uint16_t playable,DWORD key) {
+    unsigned total=0;return marriedRecord(installedTarget,component,playable,key,total)!=nullptr;
+}
+void RunBeautyForPartner(NativeBeautyEntry original,void* self,void* a2,void* a3,void* payload,
+    void* component,std::uint16_t playable,DWORD key) {
+    BeautyRoute route{component,playable,key};
+    struct Guard {BeautyRoute* previous;explicit Guard(BeautyRoute& value):previous(beautyRoute){beautyRoute=&value;}~Guard(){beautyRoute=previous;}} guard(route);
+    original(self,a2,a3,payload);
 }
 
 bool IsPartnerSpawnHookReady(){return spawnHookReady;}

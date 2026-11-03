@@ -14,11 +14,13 @@ CheckTribe(Human) && CheckFriendlyLevel(<Me>)>=2 && IsMarriageable() && !HasLivi
 | --- | --- | --- |
 | pa::ConditionData_CheckFriendlyLevel | IgnoreFriendlyLevel | 按虚拟等级 127 重算比较 |
 | pa::ConditionData_IsMarriageable | IgnoreMarriageable | 1 → 0 |
-| pa::ConditionData_HasLivingTogether | IgnoreLivingTogether | 0 → 1 |
+| pa::ConditionData_HasLivingTogether | IgnoreLivingTogether | 仅取反语境下 0 → 1；正向检查保持原结果 |
 | pa::ConditionData_CheckAffinityLevel | IgnoreAffinityLevel | 按虚拟等级 127 重算比较 |
 | pa::ConditionData_CheckTribe | IgnoreTribe | 1 → 0 |
 
 引擎三态返回为 0=条件满足、1=不满足、2=上下文不可用。每个包装函数都先调用原函数，再根据总开关及子开关覆盖有效真/假结果；2 和未知值原样返回。此处没有增加好感或直接写入婚姻数据。
+
+未发布的美容修复保留条件评估器第三参数。已核对原生 NOT 节点对该参数 `xor 1`，AND 继续传递；仅在参数为 1 时覆盖同居条件，避免隐藏需要“已有伴侣”的美容入口。游戏内已验证该配置下美容恢复。
 
 CheckFriendlyLevel 和 CheckAffinityLevel 支持等于、不等于、大小比较等多种运算。子开关覆盖对应类型的结果，不只覆盖婚姻入口的 >=2 / >=3；CheckTribe 子开关也不限于 Human 参数。其他任务中的这些条件同样可能受影响。开关不改变好感、亲密度或角色种族，剧情与 Single/Dating/Married 阶段控制仍保留。
 

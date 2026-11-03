@@ -1,5 +1,7 @@
 # 红色沙漠 后宫插件
 
+工作区未发布改动：已加入伴侣美容选择窗口，并修复 `IgnoreLivingTogether=1` 隐藏美容入口的问题。已在游戏内验证取消、不同对象切换和保存隔离。
+
 为《红色沙漠》提供可配置的恋爱与婚姻条件覆盖，支持继续与其他对象结婚、选择当前伴侣，以及实验性的全员召唤 / 收回。Windows x64 ASI 插件，配置和源码注释为中文。
 
 
@@ -19,6 +21,7 @@
 | 种族条件覆盖 | 种族不符合要求也能通过对应检查 |
 | 婚姻提交覆盖 | 提交新婚姻时，排除自己已有其他已婚对象这一阻碍 |
 | 当前伴侣选择 | 自动优先选择新婚对象，或手动指定一位已有伴侣 |
+| 伴侣美容选择（未发布） | 点击伴侣美容后，在插件窗口中选择已婚对象，再进入原版美容；取消时不打开编辑器 |
 | 全员召唤 / 收回 | 在召唤 / 收回结婚对象时，同步召唤 / 收回所有已婚对象 |
 | 读档恢复同行 | 分别读取各位已婚伴侣保存的同行状态，只恢复已选择同行的对象 |
 
@@ -116,6 +119,7 @@ SpawnAllPartners=1
 | `Conditions` | `IgnoreTribe` | `1` | 绕过种族条件，实际种族不变 |
 | `Relationships` | `IgnoreExistingMarriageOnCommit` | `1` | 提交婚姻时排除自己现有婚姻的阻碍，并启用当前伴侣选择 |
 | `Relationships` | `PreferredPartnerKey` | `0` | `0` 自动选择；非零值指定当前角色的一位真实已婚对象 |
+| `Relationships` | `BeautyPartnerPicker` | `1`（未发布） | 点击伴侣美容后显示插件选择窗口，支持双击、确定和取消 |
 | `Relationships` | `SpawnAllPartners` | `1` | 全员召唤 / 收回，并在读档时分别恢复已保存为同行的伴侣 |
 
 多人同行恢复需要 `Enabled=1`、`SpawnAllPartners=1`，并在加载日志中看到 `PARTNER RESTORE HOOK INSTALLED` 和 `PartnerRestoreActive=1`。先对需要跟随的伴侣分别选择“结伴同行”并保存，再读档；选择“等待”的对象保持原状态。读档后日志 `PARTNER RESTORE` 中的 `followRequests` 表示原版请求恢复同行的人数，实际出场和跟随仍需游戏内确认。入口无法兼容时会记录 `PARTNER RESTORE UNAVAILABLE` 并保留原版恢复行为。游戏已读档后才开启开关，需要重新读档才能触发。

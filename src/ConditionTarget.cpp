@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "ConditionTarget.h"
 #include "MarriageCommit.h"
+#include "BeautyPicker.h"
 #include "../vendor/minhook/src/hde/hde64.h"
 #include <algorithm>
 #include <cstdint>
@@ -1074,4 +1075,99 @@ bool FindPartnerRestoreTarget(HMODULE module, MarriageCommitTarget& target, cons
     }
     if (matches != 1) { error = "partner restore caller or saved-party contract incompatible"; return false; }
     error = nullptr; return true;
+}
+
+bool FindBeautyPartnerLookup(HMODULE module, MarriageCommitTarget& target) {
+    target.beautyLookupReturn=nullptr;
+    Image image;
+    if (!image.open(module) || !target.lookupRva) return false;
+    constexpr char name[]="BeautyLivingTogether";
+    std::vector<DWORD> strings;
+    for (const auto& span:image.spans) {
+        for(DWORD at=span.begin;at+sizeof(name)<=span.end;++at)
+            if(image.base[at]=='B' && !std::memcmp(image.base+at,name,sizeof(name))) strings.push_back(at);
+    }
+    unsigned matches=0;
+    for(const auto& span:image.spans) if(span.executable) for(DWORD at=span.begin;at+7<=span.end;++at) {
+        const auto q=image.base+at;
+        if(q[0]!=0x48 || q[1]!=0x8d || q[2]!=0x15)continue;
+        std::int32_t rel=0;std::memcpy(&rel,q+3,4);
+        const auto string=static_cast<std::int64_t>(at)+7+rel;
+        if(std::find(strings.begin(),strings.end(),string)==strings.end())continue;
+        DWORD begin=0,length=0;
+        if(!image.functionRange(at,begin,length))continue;
+        for(const auto& call:callsIn(image,begin,length)) if(call.second==target.lookupRva) {
+            target.beautyLookupReturn=image.base+call.first+5;++matches;
+        }
+    }
+    if(matches==1)return true;
+    target.beautyLookupReturn=nullptr;return false;
+}
+
+bool FindBeautyUiTarget(HMODULE module,const MarriageCommitTarget& marriage,BeautyUiTarget& target) {
+    target={};Image image;DWORD ret=0,begin=0,length=0;
+    if(!image.open(module) || !image.pointerRva(reinterpret_cast<std::uintptr_t>(marriage.beautyLookupReturn),ret) ||
+        !image.functionRange(ret,begin,length))return false;
+    target.entry=reinterpret_cast<NativeBeautyEntry>(image.base+begin);
+    for(DWORD i=0;i+8<=length;++i) {
+        const auto q=image.base+begin+i;
+        if(q[0]==0x41 && q[1]==0xc6 && q[2]==0x86 && q[7]==1) {
+            unsigned offset=0;std::memcpy(&offset,q+3,4);
+            if(offset>0x100 && offset<4096)target.modeOffset=offset;
+        }
+    }
+    unsigned worlds=0;
+    for(const auto& call:callsIn(image,begin,length)) {
+        DWORD size=0;
+        if(!image.functionSize(call.second,size) || size>128)continue;
+        for(DWORD j=0;j+16<=size;++j) {
+            const auto q=image.base+call.second+j;
+            if(q[0]!=0x48 || q[1]!=0x8b || q[2]!=0x0d || q[7]!=0x48 || q[8]!=0x8b || q[9]!=0x49 || q[11]!=0xe8)continue;
+            std::int32_t rel=0;std::memcpy(&rel,q+12,4);
+            const auto helper=static_cast<std::int64_t>(call.second)+j+16+rel;
+            DWORD hs=0;
+            if(helper<=0 || helper>=image.size || !image.functionSize(static_cast<DWORD>(helper),hs))continue;
+            unsigned session=0,actor=0;
+            for(DWORD k=0;k+7<=hs;++k) {
+                const auto h=image.base+helper+k;
+                if(h[0]==0x48 && h[1]==0x8b && h[2]==0x79)session=h[3];
+                if(h[0]==0x4c && h[1]==0x8b && h[2]==0xb0)std::memcpy(&actor,h+3,4);
+            }
+            if(!session || !actor || actor>4096)continue;
+            std::memcpy(&rel,q+3,4);
+            const auto slot=static_cast<std::int64_t>(call.second)+j+7+rel;
+            if(slot<=0 || slot>=image.size || !image.contains(static_cast<DWORD>(slot),8))continue;
+            auto* ptr=reinterpret_cast<void**>(image.base+slot);
+            if(!target.clientWorld) {target.clientWorld=ptr;target.worldManager=q[10];target.managerSession=session;target.sessionActor=actor;++worlds;}
+            else if(target.clientWorld!=ptr || target.sessionActor!=actor || target.managerSession!=session)++worlds;
+        }
+    }
+    // 从原生 getCharacterName 绑定恢复名字管理器和本地化文本字段。
+    constexpr char name[]="getCharacterName";
+    std::vector<DWORD> strings;
+    for(const auto& span:image.spans)for(DWORD at=span.begin;at+sizeof(name)<=span.end;++at)
+        if(image.base[at]=='g' && !std::memcmp(image.base+at,name,sizeof(name)))strings.push_back(at);
+    for(const auto& span:image.spans)if(span.executable)for(DWORD at=span.begin+96;at+7<=span.end;++at) {
+        const auto q=image.base+at;
+        if(q[0]!=0x4c || q[1]!=0x8d || q[2]!=5)continue;
+        std::int32_t rel=0;std::memcpy(&rel,q+3,4);
+        if(std::find(strings.begin(),strings.end(),static_cast<std::int64_t>(at)+7+rel)==strings.end())continue;
+        for(DWORD j=at-96;j+7<=at;++j) {
+            const auto p=image.base+j;
+            if(p[0]!=0x48 || p[1]!=0x8d || p[2]!=0x15)continue;
+            std::memcpy(&rel,p+3,4);const auto method=static_cast<std::int64_t>(j)+7+rel;
+            DWORD ms=0;if(method<=0 || method>=image.size || !image.functionSize(static_cast<DWORD>(method),ms))continue;
+            constexpr unsigned char textField[]={0x48,0x8b,0x88,0x10,1,0,0};
+            if(!codeHas(image,static_cast<DWORD>(method),ms,textField,sizeof(textField)))continue;
+            for(DWORD k=0;k+7<=(std::min)(ms,DWORD{128});++k) {
+                const auto m=image.base+method+k;
+                if(m[0]!=0x4c || m[1]!=0x8b || m[2]!=0x1d)continue;
+                std::memcpy(&rel,m+3,4);const auto slot=method+k+7+rel;
+                if(slot>0 && slot<image.size && image.contains(static_cast<DWORD>(slot),8)) {
+                    target.characters=reinterpret_cast<void**>(image.base+slot);target.nameOffset=0x110;
+                }
+            }
+        }
+    }
+    return target.modeOffset && worlds==1 && target.clientWorld;
 }

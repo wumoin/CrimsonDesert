@@ -6,10 +6,11 @@
 #include <cwchar>
 #include "ConditionTarget.h"
 #include "MarriageCommit.h"
+#include "BeautyPicker.h"
 
 namespace {
 // 引擎使用 0=满足、1=不满足、2=上下文不可用，不能使用普通 bool 代替。
-using Evaluate = std::uint8_t(__fastcall*)(void*, void*);
+using Evaluate = std::uint8_t(__fastcall*)(void*, void*, std::uint8_t);
 constexpr unsigned conditionCount = static_cast<unsigned>(ConditionKind::Count);
 constexpr const wchar_t* keys[] = {
     L"IgnoreFriendlyLevel", L"IgnoreMarriageable", L"IgnoreLivingTogether", L"IgnoreAffinityLevel", L"IgnoreTribe"
@@ -27,6 +28,7 @@ wchar_t logPath[MAX_PATH] = {}, iniPath[MAX_PATH] = {};
 
 struct Settings {
     bool enabled = false;
+    bool beautyPicker = false;
     LONG requested = 0;
     bool ignoreExistingMarriageOnCommit = false;
     DWORD preferredPartnerKey = 0;
@@ -36,6 +38,7 @@ struct Settings {
 
 Settings readSettings() {
     Settings settings;
+    settings.beautyPicker = GetPrivateProfileIntW(L"Relationships", L"BeautyPartnerPicker", 0, iniPath) != 0;
     settings.enabled = GetPrivateProfileIntW(L"Experiment", L"Enabled", 0, iniPath) != 0;
     settings.ignoreExistingMarriageOnCommit = GetPrivateProfileIntW(
         L"Relationships", L"IgnoreExistingMarriageOnCommit", 0, iniPath) != 0;
@@ -93,12 +96,16 @@ std::uint8_t transform(std::uint8_t value, ConditionKind kind, bool active,
 }
 
 template<unsigned index>
-std::uint8_t __fastcall replacement(void* object, void* context) {
+std::uint8_t __fastcall replacement(void* object, void* context, std::uint8_t negated) {
     // 始终先由原函数处理真实上下文，不增加好感、不写关系状态。
-    const auto value = originals[index](object, context);
+    const auto value = originals[index](object, context, negated);
     const auto mask = InterlockedCompareExchange(&activeConditions, 0, 0);
-    return transform(value, static_cast<ConditionKind>(index), (mask & (1L << index)) != 0,
+    // 原生 NOT 节点翻转第三参数，AND 节点继续传递。
+    // 只覆盖取反的同居条件，保留美容等正向检查。
+    const bool applicable = index != static_cast<unsigned>(ConditionKind::LivingTogether) || negated == 1;
+    const auto result = transform(value, static_cast<ConditionKind>(index), applicable && (mask & (1L << index)) != 0,
         &targets[index], object);
+    return result;
 }
 
 const Evaluate replacements[] = {replacement<0>, replacement<1>, replacement<2>, replacement<3>, replacement<4>};
@@ -176,6 +183,7 @@ DWORD WINAPI run(void*) {
     int oldSpawn=-1;
     for (;;) {
         const auto settings = readSettings();
+        SetBeautyPickerEnabled(settings.enabled && settings.beautyPicker);
         // 五项条件覆盖的总开关与子开关用一个原子位掩码发布。
         InterlockedExchange(&activeConditions, settings.active());
         const bool commitActive = settings.enabled && settings.ignoreExistingMarriageOnCommit && commitHookReady;

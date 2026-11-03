@@ -42,6 +42,7 @@ struct MarriageCommitTarget {
     unsigned playableOffset = 0;
     LivingPartnerLookup lookup = nullptr;
     DWORD lookupRva = 0;
+    void* beautyLookupReturn = nullptr;
     void* commitCallReturn = nullptr;
     DWORD writerRva = 0;
     unsigned npcKeyOffsets[4] = {};
@@ -76,6 +77,7 @@ void SetPartnerRuntimeLog(PluginLog log);
 
 bool FindMarriageCommitTarget(HMODULE module, MarriageCommitTarget& target, const char*& error,
     void* livingEvaluator = nullptr);
+bool FindBeautyPartnerLookup(HMODULE module, MarriageCommitTarget& target);
 bool FindPartnerRuntimeTarget(HMODULE module, MarriageCommitTarget& target, const char*& error);
 // 独立定位读档恢复入口；不兼容时只关闭恢复扩展，保留现有功能。
 bool FindPartnerRestoreTarget(HMODULE module, MarriageCommitTarget& target, const char*& error);
