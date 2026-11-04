@@ -2,6 +2,7 @@
 #include "ConditionTarget.h"
 #include "MarriageCommit.h"
 #include "BeautyPicker.h"
+#include "PartnerManager.h"
 #include "../vendor/minhook/src/hde/hde64.h"
 #include <algorithm>
 #include <cstdint>
@@ -1170,4 +1171,75 @@ bool FindBeautyUiTarget(HMODULE module,const MarriageCommitTarget& marriage,Beau
         }
     }
     return target.modeOffset && worlds==1 && target.clientWorld;
+}
+
+bool FindPartnerNameTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerNameTarget& target,const char** error) {
+    target={};Image image;NativeRequestHandler ack=nullptr;
+    if(error)*error="native character-name acknowledgement not uniquely verified";
+    if(!image.open(module) || !requestHandler(image,".?AVTrocTrChangeCharacterNameAck@pa@@",ack))return false;
+    DWORD begin=0,size=0;
+    if(!image.pointerRva(reinterpret_cast<std::uintptr_t>(ack),begin) || !image.functionSize(begin,size))return false;
+    PartnerNameTarget found{};unsigned assignments=0,worlds=0,registries=0;
+    std::vector<DWORD> seenRegistries;
+    // 回执从角色组件表取得状态组件，再把 UTF-16 名字交给原生字符串赋值函数。
+    for(DWORD i=0;i+15<=size;++i) {
+        const auto p=image.base+begin+i;
+        if(p[0]==0x48 && p[1]==0x8d && p[2]==0x8b && p[7]==0x49 && p[8]==0x8b && p[9]==0xd7 && p[10]==0xe8) {
+            unsigned offset=0;std::int32_t rel=0;
+            std::memcpy(&offset,p+3,4);std::memcpy(&rel,p+11,4);
+            const auto dest=static_cast<std::int64_t>(begin)+i+15+rel;
+            constexpr BYTE assignHead[]={0x40,0x53,0x55,0x56,0x48,0x83,0xec,0x30,0x48,0x8b,0x31,0x48,0x8b,0xea,0x48,0x8b,0xd9};
+            if(offset<16 || offset>4096 || dest<=0 || dest>=image.size ||
+                !image.contains(static_cast<DWORD>(dest),sizeof(assignHead),true) ||
+                std::memcmp(image.base+dest,assignHead,sizeof(assignHead)))continue;
+            // 同一回执的实例路径必须与既有 NPC 状态组件布局一致。
+            constexpr BYTE statusLoad[]={0x48,0x8b,0x40,0x68,0x48,0x8b,0x58};
+            if(i<48 || !codeHas(image,begin+i-48,48,statusLoad,sizeof(statusLoad)))continue;
+            const auto load=std::search(image.base+begin+i-48,image.base+begin+i,statusLoad,statusLoad+sizeof(statusLoad));
+            if(load+sizeof(statusLoad)>=image.base+begin+i || load[sizeof(statusLoad)]!=marriage.npcKeyOffsets[1])continue;
+            found.assign=reinterpret_cast<NativePartnerNameAssign>(image.base+dest);
+            found.nameOffset=offset;found.statusOffset=marriage.npcKeyOffsets[1];++assignments;
+        }
+        if(p[0]==0x48 && p[1]==0x8b && p[2]==5 && p[7]==0x4c && p[8]==0x8b && p[9]==0x60) {
+            std::int32_t rel=0;std::memcpy(&rel,p+3,4);
+            const auto slot=static_cast<std::int64_t>(begin)+i+7+rel;
+            if(slot>0 && slot<image.size && image.contains(static_cast<DWORD>(slot),8)) {
+                found.clientWorld=reinterpret_cast<void**>(image.base+slot);found.managerOffset=p[10];++worlds;
+            }
+        }
+    }
+    // 由回执的实例查找链恢复客户端注册表；完整 ActorId 查找不能使用服务端的掩码键。
+    for(const auto& a:callsIn(image,begin,size)) {
+        DWORD as=0;if(!image.functionSize(a.second,as) || as>128)continue;
+        for(const auto& b:callsIn(image,a.second,as)) {
+            DWORD bs=0;if(!image.functionSize(b.second,bs) || bs>1024)continue;
+            for(const auto& c:callsIn(image,b.second,bs)) {
+                if(std::find(seenRegistries.begin(),seenRegistries.end(),c.second)!=seenRegistries.end())continue;
+                DWORD cs=0;if(!image.functionSize(c.second,cs) || cs>256)continue;
+                constexpr BYTE fullId[]={0x44,0x8b,0xc2};
+                constexpr BYTE entryCheck[]={0x45,0x39,0x41,4};
+                if(!codeHas(image,c.second,cs,fullId,sizeof(fullId)) || !codeHas(image,c.second,cs,entryCheck,sizeof(entryCheck)))continue;
+                unsigned count=0,buckets=0,entries=0;
+                const auto code=image.base+c.second;
+                for(DWORD j=0;j+7<=cs;++j) {
+                    const auto q=code+j;
+                    if(q[0]==0x8b && q[1]==0x89)std::memcpy(&count,q+2,4);
+                    if(q[0]==0x4d && q[1]==3 && q[2]==0x9a)std::memcpy(&buckets,q+3,4);
+                    if(q[0]==0x49 && q[1]==0x8b && q[2]==0x82)std::memcpy(&entries,q+3,4);
+                }
+                // 调用者以 manager+8 为注册表对象；同时核对参数保持和原生表查找调用。
+                const auto before=c.first-b.second;
+                if(before<6 || std::memcmp(image.base+c.first-6,"\x8b\xd7\x48\x8b\x4d",5))continue;
+                const unsigned registry=image.base[c.first-1];
+                if(!registry || !count || !buckets || !entries || count>4096 || buckets>4096 || entries>4096)continue;
+                found.registryOffset=registry;found.bucketCountOffset=count;
+                found.bucketsOffset=buckets;found.entriesOffset=entries;seenRegistries.push_back(c.second);++registries;
+            }
+        }
+    }
+    if(assignments!=1){if(error)*error="native UTF-16 name assignment ABI not uniquely verified";return false;}
+    if(worlds!=1){if(error)*error="native client actor manager not uniquely verified";return false;}
+    if(registries!=1){if(error)*error=registries?"native client actor registry ambiguous":"native client actor registry not verified";return false;}
+    if(error)*error=nullptr;
+    target=found;return true;
 }

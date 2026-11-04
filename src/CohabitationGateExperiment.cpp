@@ -7,6 +7,8 @@
 #include "ConditionTarget.h"
 #include "MarriageCommit.h"
 #include "BeautyPicker.h"
+#include "PartnerManager.h"
+#include "UiLanguage.h"
 
 namespace {
 // 引擎使用 0=满足、1=不满足、2=上下文不可用，不能使用普通 bool 代替。
@@ -25,6 +27,7 @@ ConditionTarget targets[conditionCount] = {};
 HMODULE self = nullptr;
 volatile LONG activeConditions = 0;
 wchar_t logPath[MAX_PATH] = {}, iniPath[MAX_PATH] = {};
+SRWLOCK settingsLock=SRWLOCK_INIT;
 
 struct Settings {
     bool enabled = false;
@@ -64,6 +67,16 @@ void log(const char* text) {
             GetCurrentProcessId(), text);
         fclose(file);
     }
+}
+
+bool savePreferredPartner(DWORD key) {
+    AcquireSRWLockExclusive(&settingsLock);
+    wchar_t value[16]{};swprintf_s(value,L"%lu",key);
+    const bool saved=WritePrivateProfileStringW(L"Relationships",L"PreferredPartnerKey",value,iniPath)!=FALSE;
+    if(saved)SetPreferredPartnerKey(key);
+    ReleaseSRWLockExclusive(&settingsLock);
+    if(saved){char line[128];sprintf_s(line,"PARTNER PREFERENCE SAVED: PreferredPartnerKey=%lu; applied immediately.",key);log(line);}
+    return saved;
 }
 
 std::uint8_t transform(std::uint8_t value, ConditionKind kind, bool active,
@@ -132,7 +145,8 @@ DWORD WINAPI run(void*) {
     wcscpy_s(iniPath, logPath);
     dot = wcsrchr(iniPath, L'.');
     wcscpy_s(dot, MAX_PATH - (dot - iniPath), L".ini");
-    log("Plugin loaded. v0.1.2: native saved-party restoration, instance reconciliation and interaction-bound divorce; full multi-marriage is unverified.");
+    ConfigurePartnerManager(iniPath,&savePreferredPartner,log);
+    log("Plugin loaded. v0.1.3: F8 partner manager, persistent display names, beauty selection and bilingual dialogs; native relationship guards.");
 
     // 全部定位成功才安装；配置暂时关闭的条件也先定位，便于运行中切换。
     for (unsigned i = 0; i < conditionCount; ++i) {
@@ -181,7 +195,14 @@ DWORD WINAPI run(void*) {
     int oldCommit = -1;
     DWORD oldPartnerKey=MAXDWORD;
     int oldSpawn=-1;
+    ULONGLONG nextSettings=0;
     for (;;) {
+        PollPartnerManager();
+        const auto now=GetTickCount64();
+        if(now<nextSettings){Sleep(50);continue;}
+        nextSettings=now+5000;
+        ReloadUiLanguage();
+        AcquireSRWLockExclusive(&settingsLock);
         const auto settings = readSettings();
         SetBeautyPickerEnabled(settings.enabled && settings.beautyPicker);
         // 五项条件覆盖的总开关与子开关用一个原子位掩码发布。
@@ -189,6 +210,8 @@ DWORD WINAPI run(void*) {
         const bool commitActive = settings.enabled && settings.ignoreExistingMarriageOnCommit && commitHookReady;
         const bool spawnActive=settings.enabled && settings.spawnAllPartners && IsPartnerSpawnHookReady();
         SetMarriageCommitOverride(commitActive,settings.preferredPartnerKey,spawnActive,settings.enabled);
+        SetPartnerManagerEnabled(settings.enabled,commitActive);
+        ReleaseSRWLockExclusive(&settingsLock);
         if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled ||
             static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit || settings.preferredPartnerKey!=oldPartnerKey ||
             static_cast<int>(settings.spawnAllPartners)!=oldSpawn) {
@@ -205,7 +228,7 @@ DWORD WINAPI run(void*) {
             oldPartnerKey=settings.preferredPartnerKey;
             oldSpawn=settings.spawnAllPartners;
         }
-        Sleep(5000);
+        Sleep(50);
     }
 }
 }

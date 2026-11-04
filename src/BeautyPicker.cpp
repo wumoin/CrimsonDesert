@@ -1,5 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "BeautyPicker.h"
+#include "PartnerManager.h"
+#include "UiLanguage.h"
 #include "../vendor/minhook/include/MinHook.h"
 #include <string>
 #include <vector>
@@ -63,27 +65,60 @@ std::wstring partnerName(const BeautyPartnerOption& partner,unsigned index) {
             }
         }
     }
-    return L"伴侣 "+std::to_wstring(index+1);
+    return UiString(UiText::PartnerFallbackPrefix)+std::to_wstring(index+1);
 }
 struct Choice {
+    std::vector<BeautyPartnerOption> partners;
+    std::uint16_t playable=0xffff;
     std::vector<std::wstring> names;
     int initial=0,selected=-1;
 };
+void fillBeautyList(HWND window,Choice& data) {
+    const auto previous=SendDlgItemMessageW(window,100,LB_GETCURSEL,0,0);
+    const auto top=SendDlgItemMessageW(window,100,LB_GETTOPINDEX,0,0);
+    data.names.clear();
+    for(unsigned i=0;i<data.partners.size();++i)data.names.push_back(PartnerDisplayName(data.playable,data.partners[i],i));
+    const auto originalNames=data.names;
+    for(std::size_t i=0;i<data.names.size();++i) {
+        bool duplicate=false;
+        for(std::size_t j=0;j<data.names.size();++j)if(i!=j && originalNames[i]==originalNames[j])duplicate=true;
+        if(duplicate)data.names[i]+=L" ["+std::to_wstring(data.partners[i].key)+L"]";
+    }
+    SendDlgItemMessageW(window,100,WM_SETREDRAW,FALSE,0);
+    SendDlgItemMessageW(window,100,LB_RESETCONTENT,0,0);
+    for(const auto& name:data.names)SendDlgItemMessageW(window,100,LB_ADDSTRING,0,reinterpret_cast<LPARAM>(name.c_str()));
+    SendDlgItemMessageW(window,100,LB_SETCURSEL,previous==LB_ERR?data.initial:previous,0);
+    SendDlgItemMessageW(window,100,LB_SETTOPINDEX,top==LB_ERR?0:top,0);
+    SendDlgItemMessageW(window,100,WM_SETREDRAW,TRUE,0);InvalidateRect(GetDlgItem(window,100),nullptr,TRUE);
+}
+void refreshBeautyLanguage(HWND window,Choice& data) {
+    SetWindowTextW(window,UiString(UiText::BeautyTitle));
+    SetDlgItemTextW(window,UiLanguageLabelId,UiString(UiText::LanguageLabel));
+    SetDlgItemTextW(window,101,UiString(UiText::BeautyHelp));
+    SetDlgItemTextW(window,IDOK,UiString(UiText::Confirm));
+    SetDlgItemTextW(window,IDCANCEL,UiString(UiText::Cancel));
+    RefreshUiLanguageSelector(window);fillBeautyList(window,data);
+}
 INT_PTR CALLBACK dialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     auto* data=reinterpret_cast<Choice*>(GetWindowLongPtrW(window,DWLP_USER));
     if(message==WM_INITDIALOG) {
         data=reinterpret_cast<Choice*>(lp);SetWindowLongPtrW(window,DWLP_USER,lp);
-        for(const auto& name:data->names)SendDlgItemMessageW(window,100,LB_ADDSTRING,0,reinterpret_cast<LPARAM>(name.c_str()));
-        SendDlgItemMessageW(window,100,LB_SETCURSEL,data->initial,0);
-        RECT bounds{};GetWindowRect(window,&bounds);HWND parent=GetParent(window);RECT area{};
-        if(parent && GetWindowRect(parent,&area))SetWindowPos(window,nullptr,area.left+(area.right-area.left-(bounds.right-bounds.left))/2,
-            area.top+(area.bottom-area.top-(bounds.bottom-bounds.top))/2,0,0,SWP_NOSIZE|SWP_NOZORDER);
+        InitializeUiLanguageSelector(window);RegisterUiLanguageWindow(window);refreshBeautyLanguage(window,*data);
+        CenterUiDialog(window,GetParent(window));
         SetFocus(GetDlgItem(window,100));return FALSE;
     }
+    if(message==WM_DESTROY){UnregisterUiLanguageWindow(window);return TRUE;}
+    if(message==UiLanguageChangedMessage() && data){refreshBeautyLanguage(window,*data);return TRUE;}
     if(message==WM_CLOSE) {EndDialog(window,IDCANCEL);return TRUE;}
     if(message==WM_COMMAND && data) {
         const auto id=LOWORD(wp);
+        if(IsUiLanguageCommand(wp)) {
+            if(ApplyUiLanguageSelection(window))refreshBeautyLanguage(window,*data);
+            else MessageBoxW(window,UiString(UiText::LanguageSaveFailed),UiString(UiText::LanguageErrorTitle),MB_OK|MB_ICONWARNING);
+            return TRUE;
+        }
         if(id==IDCANCEL){EndDialog(window,IDCANCEL);return TRUE;}
+        if(id==IDOK && GetFocus()==GetDlgItem(window,UiLanguageComboId))return TRUE;
         if(id==IDOK || (id==100 && HIWORD(wp)==LBN_DBLCLK)) {
             const auto selected=SendDlgItemMessageW(window,100,LB_GETCURSEL,0,0);
             if(selected!=LB_ERR && selected>=0 && static_cast<std::size_t>(selected)<data->names.size()) {
@@ -102,24 +137,24 @@ void control(std::vector<BYTE>& out,DWORD style,short x,short y,short w,short h,
     dword(out,style|WS_CHILD|WS_VISIBLE);dword(out,0);word(out,x);word(out,y);word(out,w);word(out,h);word(out,id);
     word(out,0xffff);word(out,type);text(out,title);word(out,0);
 }
-DWORD choose(const std::vector<BeautyPartnerOption>& partners) {
-    Choice data;
-    const auto previous=static_cast<DWORD>(InterlockedCompareExchange(&lastChoice,0,0));
-    for(unsigned i=0;i<partners.size();++i) {data.names.push_back(partnerName(partners[i],i));if(partners[i].key==previous)data.initial=static_cast<int>(i);}
-    const auto originalNames=data.names;
-    for(std::size_t i=0;i<data.names.size();++i) {
-        bool duplicate=false;
-        for(std::size_t j=0;j<data.names.size();++j)if(i!=j && originalNames[i]==originalNames[j])duplicate=true;
-        if(duplicate)data.names[i]+=L"（"+std::to_wstring(partners[i].key)+L"）";
-    }
+std::vector<BYTE> beautyLayout() {
     std::vector<BYTE> layout;
-    dword(layout,WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT);dword(layout,0);word(layout,4);
-    word(layout,0);word(layout,0);word(layout,290);word(layout,225);word(layout,0);word(layout,0);text(layout,L"伴侣美容");
+    dword(layout,WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT);dword(layout,0);word(layout,6);
+    word(layout,0);word(layout,0);word(layout,290);word(layout,249);word(layout,0);word(layout,0);text(layout,UiString(UiText::BeautyTitle));
     word(layout,9);text(layout,L"Microsoft YaHei UI");
-    control(layout,0,10,9,270,16,101,0x82,L"选择要美容的伴侣：");
-    control(layout,WS_BORDER|WS_VSCROLL|WS_TABSTOP|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT,10,28,270,158,100,0x83,L"");
-    control(layout,WS_TABSTOP|BS_DEFPUSHBUTTON,160,198,55,18,IDOK,0x80,L"确定");
-    control(layout,WS_TABSTOP,225,198,55,18,IDCANCEL,0x80,L"取消");
+    control(layout,0,90,10,90,14,UiLanguageLabelId,0x82,UiString(UiText::LanguageLabel));
+    control(layout,WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,180,7,100,80,UiLanguageComboId,0x85,L"");
+    control(layout,0,10,33,270,16,101,0x82,UiString(UiText::BeautyHelp));
+    control(layout,WS_BORDER|WS_VSCROLL|WS_TABSTOP|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT,10,52,270,158,100,0x83,L"");
+    control(layout,WS_TABSTOP|BS_DEFPUSHBUTTON,160,222,55,18,IDOK,0x80,UiString(UiText::Confirm));
+    control(layout,WS_TABSTOP,225,222,55,18,IDCANCEL,0x80,UiString(UiText::Cancel));
+    return layout;
+}
+DWORD choose(const std::vector<BeautyPartnerOption>& partners,std::uint16_t playable) {
+    Choice data;data.partners=partners;data.playable=playable;
+    const auto previous=static_cast<DWORD>(InterlockedCompareExchange(&lastChoice,0,0));
+    for(unsigned i=0;i<partners.size();++i)if(partners[i].key==previous)data.initial=static_cast<int>(i);
+    const auto layout=beautyLayout();
     HWND owner=GetForegroundWindow();DWORD pid=0;GetWindowThreadProcessId(owner,&pid);
     if(pid!=GetCurrentProcessId())owner=nullptr;
     const auto result=DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),owner,dialog,reinterpret_cast<LPARAM>(&data));
@@ -138,7 +173,7 @@ void __fastcall entry(void* self,void* a2,void* a3,void* payload) {
         if(logger)logger("BEAUTY PICKER BLOCKED: no verified current player/partner list.");return;
     }
     if(logger){char line[128];sprintf_s(line,"BEAUTY PICKER OPEN: playable=%u partners=%zu",static_cast<unsigned>(playable),partners.size());logger(line);}
-    const auto key=choose(partners);
+    const auto key=choose(partners,playable);
     if(!key){if(logger)logger("BEAUTY PICKER CANCELLED: native editor was not opened.");return;}
     void* currentActor=nullptr;void* currentComponent=nullptr;std::uint16_t currentPlayable=0;
     if(!player(currentActor,currentComponent,currentPlayable) || currentActor!=actor || currentComponent!=component || currentPlayable!=playable ||
@@ -149,10 +184,15 @@ void __fastcall entry(void* self,void* a2,void* a3,void* payload) {
     RunBeautyForPartner(original,self,a2,a3,payload,component,playable,key);
 }
 }
+bool ReadPartnerUiContext(PartnerUiContext& context) {
+    context={};return player(context.actor,context.component,context.playable);
+}
+std::wstring ReadPartnerOriginalName(const BeautyPartnerOption& partner,unsigned index) {return partnerName(partner,index);}
 void SetBeautyPickerEnabled(bool enabled){InterlockedExchange(&active,enabled?1:0);}
 bool InstallBeautyPicker(HMODULE module,const MarriageCommitTarget& target,PluginLog log) {
     logger=log;marriage=target;
     if(!FindBeautyUiTarget(module,target,ui)) {if(logger)logger("BEAUTY PICKER UNAVAILABLE: native entry/player ABI not uniquely verified.");return false;}
+    InstallPartnerManager(module,target);
     auto status=MH_CreateHook(reinterpret_cast<void*>(ui.entry),reinterpret_cast<void*>(&entry),reinterpret_cast<void**>(&original));
     if(status==MH_OK) {status=MH_EnableHook(reinterpret_cast<void*>(ui.entry));if(status!=MH_OK)MH_RemoveHook(reinterpret_cast<void*>(ui.entry));}
     if(logger){char line[192];sprintf_s(line,"BEAUTY PICKER HOOK: status=%s names=%d; native editor/target routing, plugin selection window.",MH_StatusToString(status),ui.characters!=nullptr);logger(line);}

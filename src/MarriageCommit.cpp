@@ -713,9 +713,10 @@ bool ReadBeautyPartners(void* component,std::uint16_t playable,std::vector<Beaut
     options.clear();std::vector<NativePartnerRecord> records;
     if(!readMarriedRecords(installedTarget,component,playable,records))return false;
     for(const auto& record:records) {
-        std::uint16_t character=0xffff;
-        if(!copyReadable(&character,reinterpret_cast<void*>(record.address+0xc),2))return false;
-        options.push_back({record.key,character});
+        std::uint16_t character=0xffff;DWORD actorId=0;
+        if(!copyReadable(&character,reinterpret_cast<void*>(record.address+0xc),2) ||
+            !copyReadable(&actorId,reinterpret_cast<void*>(record.address+4),4))return false;
+        options.push_back({record.key,character,actorId});
     }
     return true;
 }
@@ -732,6 +733,12 @@ void RunBeautyForPartner(NativeBeautyEntry original,void* self,void* a2,void* a3
 bool IsPartnerSpawnHookReady(){return spawnHookReady;}
 bool IsPartnerRuntimeReady(){return runtimeHookReady;}
 bool IsPartnerRestoreHookReady(){return restoreHookReady;}
+
+void SetPreferredPartnerKey(DWORD key) {
+    InterlockedExchange(&configuredPartnerKey,static_cast<LONG>(key));
+    InterlockedExchange(&routeReported,0);
+    InterlockedExchange(&missingReported,0);
+}
 
 void SetMarriageCommitOverride(bool active,DWORD preferredPartnerKey,bool spawnAll,bool relationshipGuards) {
     InterlockedExchange(&relationshipGuardsEnabled,relationshipGuards && runtimeHookReady ? 1 : 0);
