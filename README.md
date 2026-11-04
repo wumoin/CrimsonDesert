@@ -102,11 +102,6 @@ Crimson Desert/
 
 随后启动游戏并读取存档，按 F8 打开伴侣管理。如需开启或关闭其他功能，可修改 `CohabitationGateExperiment.ini`。
 
-### 已有用户升级
-
-退出游戏后只替换 ASI，**不要用默认 INI 覆盖已有配置**，以保留语言、优先伴侣和 `[PartnerNames]` 中的名字。旧 INI 缺少语言项时默认中文，也可以在弹窗中切换并自动保存。
-
-如果原 INI 没有美容选择开关，请在已有 `[Relationships]` 分区加入 `BeautyPartnerPicker=1`。其余设置可以沿用。重启后的插件日志首行应显示 `v0.1.3`。
 
 ## 配置说明
 
