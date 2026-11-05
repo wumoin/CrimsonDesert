@@ -8,7 +8,8 @@ enum class UiText : unsigned {
     PreferredAutomatic,PreferredIdPrefix,PreferredMark,OriginalNamePrefix,EmptyPartners,
     StatusDefault,NamesUnavailable,PreferenceDisabled,ContextChanged,PreferenceNeedsCommit,
     ConfigSaveFailed,PreferredSaved,AutomaticSaved,InvalidName,NameReset,NameSaved,NotLoaded,
-    LanguageSaveFailed,LanguageErrorTitle,PartnerFallbackPrefix,Count
+    LanguageSaveFailed,LanguageErrorTitle,PartnerFallbackPrefix,
+    SummonSelected,SummonUnavailable,SummonBusy,SummonFailed,Count
 };
 constexpr WORD UiLanguageLabelId=500,UiLanguageComboId=501;
 void ConfigureUiLanguage(const wchar_t* iniPath);

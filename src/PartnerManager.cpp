@@ -1,6 +1,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include "PartnerManager.h"
 #include "UiLanguage.h"
+#include "PartnerHotkey.h"
+#include "PartnerSummon.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -13,6 +15,7 @@
 namespace {
 constexpr WORD listId=100, preferenceId=101, automaticId=102, nameId=103;
 constexpr WORD saveNameId=104, resetNameId=105, statusId=106, preferenceTextId=107, originalNameId=108;
+constexpr WORD summonId=109;
 constexpr unsigned maxNameLength=30;
 using NameId=std::tuple<std::uint16_t,DWORD,std::uint16_t>;
 std::map<NameId,std::wstring> names;
@@ -28,7 +31,18 @@ constexpr wchar_t previousProcProperty[]=L"CohabitationGateExperiment.PartnerMan
 UINT dispatchMessage=0;
 std::atomic<bool> uiReady{false};
 bool keyWasDown=false;
+PartnerHotkey polledHotkey{};
+bool hotkeyConfigValid=true;
 ULONGLONG lastUpdate=0;
+
+std::wstring managerTitle(UiLanguage language=GetUiLanguage()) {
+    return std::wstring(UiString(UiText::ManagerTitle,language))+L" · "+PartnerHotkeyLabel();
+}
+std::string hotkeyLogLabel() {
+    const auto label=PartnerHotkeyLabel();std::string result;
+    for(const auto character:label)result+=static_cast<char>(character); // 热键标签只包含 ASCII。
+    return result;
+}
 
 bool read(void* out,const void* at,std::size_t size) {
     SIZE_T copied=0;
@@ -235,8 +249,8 @@ void control(std::vector<BYTE>& out,DWORD style,short x,short y,short w,short h,
 }
 std::vector<BYTE> dialogLayout() {
     std::vector<BYTE> layout;
-    dword(layout,WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT);dword(layout,0);word(layout,14);
-    word(layout,0);word(layout,0);word(layout,360);word(layout,339);word(layout,0);word(layout,0);text(layout,UiString(UiText::ManagerTitle));
+    dword(layout,WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT);dword(layout,0);word(layout,15);
+    word(layout,0);word(layout,0);word(layout,360);word(layout,339);word(layout,0);word(layout,0);text(layout,managerTitle().c_str());
     word(layout,10);text(layout,L"Microsoft YaHei UI");
     control(layout,0,152,10,90,14,UiLanguageLabelId,0x82,UiString(UiText::LanguageLabel));
     control(layout,WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,244,7,104,80,UiLanguageComboId,0x85,L"");
@@ -245,6 +259,7 @@ std::vector<BYTE> dialogLayout() {
     control(layout,0,12,166,336,24,preferenceTextId,0x82,L"");
     control(layout,WS_TABSTOP,12,193,104,22,preferenceId,0x80,UiString(UiText::SetPreferred));
     control(layout,WS_TABSTOP,126,193,104,22,automaticId,0x80,UiString(UiText::Automatic));
+    control(layout,WS_TABSTOP,240,193,108,22,summonId,0x80,UiString(UiText::SummonSelected));
     control(layout,0,12,225,336,14,originalNameId,0x82,L"");
     control(layout,0,12,246,42,14,201,0x82,UiString(UiText::NameLabel));
     control(layout,WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL,56,243,292,20,nameId,0x81,L"");
@@ -292,15 +307,19 @@ void updateOriginalName(HWND window,const ManagerDialog& data) {
     SetDlgItemTextW(window,originalNameId,(UiString(UiText::OriginalNamePrefix)+original).c_str());
 }
 void refreshManagerLanguage(HWND window,ManagerDialog& data) {
-    SetWindowTextW(window,UiString(UiText::ManagerTitle));
+    SetWindowTextW(window,managerTitle().c_str());
     struct Label{WORD id;UiText text;};
     for(const auto& label:{Label{UiLanguageLabelId,UiText::LanguageLabel},{200,UiText::ManagerHelp},
         {preferenceId,UiText::SetPreferred},{automaticId,UiText::Automatic},{201,UiText::NameLabel},
-        {saveNameId,UiText::SaveName},{resetNameId,UiText::ResetName},{IDCANCEL,UiText::Close}})
+        {saveNameId,UiText::SaveName},{resetNameId,UiText::ResetName},{summonId,UiText::SummonSelected},{IDCANCEL,UiText::Close}})
         SetDlgItemTextW(window,label.id,UiString(label.text));
     RefreshUiLanguageSelector(window);fillList(window,data);updateOriginalName(window,data);
     SetDlgItemTextW(window,statusId,UiString(data.status));
     // 不调用 updateSelection：语言切换不重填名字框，保留未保存输入和编辑选区。
+}
+void updateSummonState(HWND window,const ManagerDialog& data) {
+    const bool valid=data.selected>=0 && !data.stale && InterlockedCompareExchange(&enabled,0,0);
+    EnableWindow(GetDlgItem(window,summonId),valid && IsPartnerSummonReady() && !IsPartnerSummonBusy());
 }
 void updateSelection(HWND window,ManagerDialog& data) {
     const auto selected=SendDlgItemMessageW(window,listId,LB_GETCURSEL,0,0);
@@ -309,6 +328,7 @@ void updateSelection(HWND window,ManagerDialog& data) {
     EnableWindow(GetDlgItem(window,preferenceId),valid && InterlockedCompareExchange(&preferenceEnabled,0,0));
     EnableWindow(GetDlgItem(window,automaticId),!data.stale && InterlockedCompareExchange(&preferenceEnabled,0,0));
     for(const auto id:{nameId,saveNameId,resetNameId})EnableWindow(GetDlgItem(window,id),valid && nativeNames.assign);
+    updateSummonState(window,data);
     updateOriginalName(window,data);
     if(data.selected<0){SetDlgItemTextW(window,nameId,L"");return;}
     const auto& partner=data.partners[static_cast<std::size_t>(data.selected)];
@@ -341,8 +361,9 @@ INT_PTR CALLBACK managerDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     if(message==WM_DESTROY){UnregisterUiLanguageWindow(window);KillTimer(window,1);managerWindow=nullptr;return TRUE;}
     if(message==WM_CLOSE){EndDialog(window,IDCANCEL);return TRUE;}
     if(!data)return FALSE;
+    if(message==dispatchMessage && wp==2){SetWindowTextW(window,managerTitle().c_str());return TRUE;}
     if(message==UiLanguageChangedMessage()){refreshManagerLanguage(window,*data);return TRUE;}
-    if(message==WM_TIMER && wp==1){verifyContext(window,*data);return TRUE;}
+    if(message==WM_TIMER && wp==1){if(verifyContext(window,*data))updateSummonState(window,*data);return TRUE;}
     if(message!=WM_COMMAND)return FALSE;
     const auto id=LOWORD(wp);
     if(IsUiLanguageCommand(wp)) {
@@ -353,10 +374,16 @@ INT_PTR CALLBACK managerDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     if(id==IDCANCEL){EndDialog(window,IDCANCEL);return TRUE;}
     if(id==listId && HIWORD(wp)==LBN_SELCHANGE){updateSelection(window,*data);return TRUE;}
     // Enter 只在“保存名字”按钮或名字框上保存；列表中的 Enter 不会意外改名。
-    if(id!=preferenceId && id!=automaticId && id!=saveNameId && id!=resetNameId)return FALSE;
+    if(id!=preferenceId && id!=automaticId && id!=saveNameId && id!=resetNameId && id!=summonId)return FALSE;
     if(id==saveNameId && HIWORD(wp)==0 &&
         (GetFocus()==GetDlgItem(window,listId) || GetFocus()==GetDlgItem(window,UiLanguageComboId)))return TRUE;
     if(!verifyContext(window,*data))return TRUE;
+    if(id==summonId) {
+        if(data->selected<0)return TRUE;
+        if(!IsPartnerSummonReady()){setStatus(window,UiText::SummonUnavailable);return TRUE;}
+        if(IsPartnerSummonBusy()){setStatus(window,UiText::SummonBusy);return TRUE;}
+        EndDialog(window,summonId);return TRUE;
+    }
     if(id==preferenceId || id==automaticId) {
         if(!InterlockedCompareExchange(&preferenceEnabled,0,0)){setStatus(window,UiText::PreferenceNeedsCommit);return TRUE;}
         if(id==preferenceId && data->selected<0)return TRUE;
@@ -378,12 +405,22 @@ INT_PTR CALLBACK managerDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     applyNames();fillList(window,*data);updateSelection(window,*data);
     setStatus(window,id==resetNameId?UiText::NameReset:UiText::NameSaved);return TRUE;
 }
+bool dispatchManagerSummon(const ManagerDialog& data) {
+    return !data.stale && InterlockedCompareExchange(&enabled,0,0) && data.selected>=0 &&
+        static_cast<std::size_t>(data.selected)<data.partners.size() && IsPartnerSummonReady() && !IsPartnerSummonBusy() &&
+        RequestPartnerSummon(data.context,data.partners[static_cast<std::size_t>(data.selected)]);
+}
 void openManager() {
     if(managerWindow){SetForegroundWindow(managerWindow);return;}
     if(!uiReady || !InterlockedCompareExchange(&enabled,0,0))return;
     ManagerDialog data;
-    if(!ReadPartnerUiContext(data.context) || !ReadBeautyPartners(data.context.component,data.context.playable,data.partners)) {
-        MessageBoxW(gameWindow,UiString(UiText::NotLoaded),UiString(UiText::ManagerTitle),MB_OK|MB_ICONINFORMATION);return;
+    if(!ReadPartnerUiContext(data.context)) {
+        if(logger)logger("PARTNER MANAGER BLOCKED: controlled character/main-player relationship context unavailable.");
+        MessageBoxW(gameWindow,UiString(UiText::NotLoaded),managerTitle().c_str(),MB_OK|MB_ICONINFORMATION);return;
+    }
+    if(!ReadBeautyPartners(data.context.component,data.context.playable,data.partners)) {
+        if(logger){char line[160];sprintf_s(line,"PARTNER MANAGER BLOCKED: playable=%u relationship records could not be verified.",static_cast<unsigned>(data.context.playable));logger(line);}
+        MessageBoxW(gameWindow,UiString(UiText::NotLoaded),managerTitle().c_str(),MB_OK|MB_ICONINFORMATION);return;
     }
     data.preferred=GetPrivateProfileIntW(L"Relationships",L"PreferredPartnerKey",0,settingsPath.c_str());
     if(!data.partners.empty())data.selected=0;
@@ -393,18 +430,20 @@ void openManager() {
     const auto result=DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),
         gameWindow,managerDialog,reinterpret_cast<LPARAM>(&data));
     if(logger)logger(result==-1?"PARTNER MANAGER FAILED: dialog creation failed.":"PARTNER MANAGER CLOSED.");
+    if(result==summonId && !dispatchManagerSummon(data))
+        MessageBoxW(gameWindow,UiString(UiText::SummonFailed),managerTitle().c_str(),MB_OK|MB_ICONINFORMATION);
 }
 bool ownedWindow(HWND window) {
     DWORD pid=0;
     return window && IsWindow(window) && GetWindowThreadProcessId(window,&pid) && pid==GetCurrentProcessId();
 }
 void requestOpen(HWND window,const char* source) {
-    if(logger){char line[160];sprintf_s(line,"PARTNER MANAGER HOTKEY: source=%s hwnd=%p",source,static_cast<void*>(window));logger(line);}
-    if(!PostMessageW(window,dispatchMessage,1,0) && logger)logger("PARTNER MANAGER FAILED: could not post F8 window message.");
+    if(logger){char line[192];sprintf_s(line,"PARTNER MANAGER HOTKEY: source=%s key=%s hwnd=%p",source,hotkeyLogLabel().c_str(),static_cast<void*>(window));logger(line);}
+    if(!PostMessageW(window,dispatchMessage,1,0) && logger)logger("PARTNER MANAGER FAILED: could not post hotkey window message.");
 }
 LRESULT CALLBACK windowProc(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     // 短按也由窗口消息捕获；工作线程轮询同时兼容游戏的原始输入路径。
-    if((message==WM_KEYDOWN || message==WM_SYSKEYDOWN) && wp==VK_F8 && !(lp&(1ll<<30)) &&
+    if((message==WM_KEYDOWN || message==WM_SYSKEYDOWN) && PartnerHotkeyMatches(GetPartnerHotkey(),static_cast<UINT>(wp)) && !(lp&(1ll<<30)) &&
         InterlockedCompareExchange(&enabled,0,0) && GetForegroundWindow()==window && gameWindow==window) {
         requestOpen(window,"window");return 0;
     }
@@ -436,6 +475,7 @@ BOOL CALLBACK findWindow(HWND window,LPARAM result) {
 
 void ConfigurePartnerManager(const wchar_t* iniPath,SavePreferredPartner save,PluginLog log) {
     settingsPath=iniPath;savePreference=save;logger=log;ConfigureUiLanguage(iniPath);loadNames();
+    ReloadPartnerHotkey(iniPath,&hotkeyConfigValid);
     dispatchMessage=RegisterWindowMessageW(L"CrimsonDesert.CohabitationGateExperiment.PartnerManager.v1");
 }
 void InstallPartnerManager(HMODULE module,const MarriageCommitTarget& target) {
@@ -446,8 +486,22 @@ void InstallPartnerManager(HMODULE module,const MarriageCommitTarget& target) {
         if(logger && error){std::string line="PARTNER NAMES UNAVAILABLE: ";line+=error;logger(line.c_str());}
     }
     uiReady=true;
-    if(logger)logger(nativeNames.assign?"PARTNER MANAGER READY: F8; native client display names and persistent partner preference.":
-        "PARTNER MANAGER READY: F8; native names unavailable, preference selection remains available.");
+    if(logger) {
+        const auto line=std::string("PARTNER MANAGER READY: ")+hotkeyLogLabel()+(nativeNames.assign?
+            "; native client display names and persistent partner preference.":"; native names unavailable, preference selection remains available.");
+        logger(line.c_str());
+        if(!hotkeyConfigValid)logger("PARTNER MANAGER HOTKEY CONFIG: invalid [UI] ManagerHotkey; using F8.");
+    }
+}
+void ReloadPartnerManagerHotkey() {
+    bool valid=true;const bool changed=ReloadPartnerHotkey(settingsPath.c_str(),&valid);
+    if(logger && (changed || valid!=hotkeyConfigValid)) {
+        const auto line=valid?std::string("PARTNER MANAGER HOTKEY CONFIG: ManagerHotkey=")+hotkeyLogLabel():
+            std::string("PARTNER MANAGER HOTKEY CONFIG: invalid [UI] ManagerHotkey; using F8.");
+        logger(line.c_str());
+    }
+    hotkeyConfigValid=valid;
+    if(changed)if(const auto window=managerWindow.load())PostMessageW(window,dispatchMessage,2,0);
 }
 void SetPartnerManagerEnabled(bool active,bool preferenceActive) {
     InterlockedExchange(&preferenceEnabled,preferenceActive?1:0);InterlockedExchange(&enabled,active?1:0);
@@ -481,9 +535,10 @@ void PollPartnerManager() {
             if(replaced!=previous)SetPropW(found,previousProcProperty,reinterpret_cast<HANDLE>(replaced));
         }
         gameWindow=found;
-        if(logger){char line[160];sprintf_s(line,"PARTNER MANAGER WINDOW ATTACHED: hwnd=%p thread=%lu; F8 input bound.",static_cast<void*>(found),GetWindowThreadProcessId(found,nullptr));logger(line);}
+        if(logger){char line[192];sprintf_s(line,"PARTNER MANAGER WINDOW ATTACHED: hwnd=%p thread=%lu; %s input bound.",static_cast<void*>(found),GetWindowThreadProcessId(found,nullptr),hotkeyLogLabel().c_str());logger(line);}
     }
-    const bool down=(GetAsyncKeyState(VK_F8)&0x8000)!=0;
+    const auto hotkey=GetPartnerHotkey();const bool down=PartnerHotkeyDown(hotkey);
+    if(hotkey!=polledHotkey){polledHotkey=hotkey;keyWasDown=down;}
     if(down && !keyWasDown && GetForegroundWindow()==gameWindow && InterlockedCompareExchange(&enabled,0,0))
         requestOpen(gameWindow,"poll");
     keyWasDown=down;

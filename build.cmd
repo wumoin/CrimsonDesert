@@ -18,11 +18,14 @@ if errorlevel 1 (
   )
 )
 if not exist build mkdir build
+rem Embed the shipping INI as the single source of defaults for upgrades.
+rc /nologo /fo build\DefaultConfig.res src\DefaultConfig.rc
+if errorlevel 1 goto failed
 rem MinHook is compiled from the pinned x64 C sources; no extra runtime DLL is needed.
 cl /nologo /O2 /W3 /MT /c vendor\minhook\src\buffer.c vendor\minhook\src\hook.c vendor\minhook\src\trampoline.c vendor\minhook\src\hde\hde64.c /Fobuild\
 if errorlevel 1 goto failed
 rem /utf-8 supports Chinese source comments; /MT embeds the C/C++ runtime.
-cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /LD /EHsc src\CohabitationGateExperiment.cpp src\ConditionTarget.cpp src\MarriageCommit.cpp src\PartnerRuntime.cpp src\BeautyPicker.cpp src\PartnerManager.cpp src\UiLanguage.cpp /Fobuild\ /link user32.lib build\buffer.obj build\hook.obj build\trampoline.obj build\hde64.obj /OUT:build\CohabitationGateExperiment.asi
+cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /LD /EHsc src\CohabitationGateExperiment.cpp src\ConfigDefaults.cpp src\ConditionTarget.cpp src\MarriageCommit.cpp src\PartnerRuntime.cpp src\BeautyPicker.cpp src\PartnerManager.cpp src\PartnerHotkey.cpp src\PartnerSummon.cpp src\UiLanguage.cpp /Fobuild\ /link user32.lib build\DefaultConfig.res build\buffer.obj build\hook.obj build\trampoline.obj build\hde64.obj /OUT:build\CohabitationGateExperiment.asi
 if errorlevel 1 goto failed
 copy /Y config\CohabitationGateExperiment.ini build\CohabitationGateExperiment.ini >nul
 copy /Y vendor\minhook\LICENSE.txt build\MinHook-LICENSE.txt >nul

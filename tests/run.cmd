@@ -7,7 +7,19 @@ if errorlevel 1 call :compiler
 if errorlevel 1 goto failed
 call build.cmd
 if errorlevel 1 goto failed
-cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /EHsc tests\PartnerManagerTests.cpp src\UiLanguage.cpp /Fobuild\ /link user32.lib /OUT:build\PartnerManagerTests.exe
+cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /EHsc tests\ConfigDefaultsTests.cpp src\ConfigDefaults.cpp /Fobuild\ /link build\DefaultConfig.res /OUT:build\ConfigDefaultsTests.exe
+if errorlevel 1 goto failed
+build\ConfigDefaultsTests.exe
+if errorlevel 1 goto failed
+cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /EHsc tests\PartnerSummonTests.cpp /Fobuild\ /link user32.lib build\buffer.obj build\hook.obj build\trampoline.obj build\hde64.obj /OUT:build\PartnerSummonTests.exe
+if errorlevel 1 goto failed
+build\PartnerSummonTests.exe
+if errorlevel 1 goto failed
+cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /EHsc tests\SelectedPartnerSpawnTests.cpp build\ConditionTarget.obj /Fobuild\ /link user32.lib build\buffer.obj build\hook.obj build\trampoline.obj build\hde64.obj /OUT:build\SelectedPartnerSpawnTests.exe
+if errorlevel 1 goto failed
+build\SelectedPartnerSpawnTests.exe
+if errorlevel 1 goto failed
+cl /nologo /utf-8 /std:c++17 /O2 /W4 /MT /EHsc tests\PartnerManagerTests.cpp src\PartnerHotkey.cpp src\UiLanguage.cpp /Fobuild\ /link user32.lib /OUT:build\PartnerManagerTests.exe
 if errorlevel 1 goto failed
 build\PartnerManagerTests.exe
 if errorlevel 1 goto failed

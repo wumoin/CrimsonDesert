@@ -2,9 +2,9 @@
 
 为《红色沙漠》提供可配置的恋爱与婚姻条件覆盖，支持继续与其他对象结婚、管理已有伴侣，以及全员召唤 / 收回与读档同行恢复。Windows x64 ASI 插件。
 
-[下载 v0.1.3](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.3) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
+[下载 v0.1.4](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.4) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
 
-当前版本为 **v0.1.3 实验预发布版**。进入存档后按 **F8**，即可选择优先伴侣、修改或重置名字；伴侣美容可单独选择对象。两个弹窗支持中文 / English 切换，所有设置保存在同一个 INI 中。
+当前版本为 **v0.1.4 实验预发布版**。伴侣管理新增选中对象召唤，管理热键可在 INI 中修改，启动时自动补齐缺失配置，并修复切换德米安后窗口无法打开的问题。默认按 **F8** 打开管理，支持分别改名、伴侣美容选择和中文 / English 界面。
 
 
 
@@ -20,6 +20,7 @@
 | 婚姻提交覆盖 | 提交新婚姻时，排除自己已有其他已婚对象这一阻碍 |
 | 当前伴侣选择 | 自动优先选择新婚对象，或手动指定一位已有伴侣 |
 | F8 伴侣管理 | 按 F8 列出当前角色的已婚对象，设置优先伴侣、恢复自动选择、保存或重置各自的名字 |
+| 管理窗口召唤 | 选择一位已婚伴侣，点击“召唤所选伴侣”，通过原版请求召唤该对象 |
 | 伴侣美容选择 | 点击伴侣美容后，在插件窗口中选择已婚对象，再进入原版美容；取消时不打开编辑器 |
 | 弹窗中英文切换 | 两个弹窗顶部共用“语言 / Language”选择，立即切换文案并记住设置 |
 | 全员召唤 / 收回 | 在召唤 / 收回结婚对象时，同步召唤 / 收回所有已婚对象 |
@@ -27,15 +28,27 @@
 
 ## F8 伴侣管理
 
-进入存档后，在游戏窗口中按 **F8**，选择列表中的一位已婚对象：
+进入存档后，在游戏窗口中按 **F8**（默认热键），选择列表中的一位已婚对象：
 
 - **设为优先伴侣**：立即写入插件 INI 的 `PreferredPartnerKey`，无需等待配置刷新。
 - **恢复自动选择**：把 `PreferredPartnerKey` 恢复为 `0`。
 - **保存名字**：修改名字后点击保存，支持中文，最长 30 个 UTF-16 字符单位。
 - **重置名字**：删除该对象的自定义名字，并恢复当前实例改名前的原生名字。
+- **召唤所选伴侣**：关闭管理窗口后发送原版召唤请求，只处理列表中选中的对象；不会改写优先伴侣或随“全员召唤”扩大到其他对象。
 - **关闭 / Escape**：关闭窗口；未点击保存的名字输入不会提交。
 
 窗口需要 `Enabled=1`；设置优先伴侣还需要 `IgnoreExistingMarriageOnCommit=1`。自定义名字也会显示在伴侣美容选择列表中。游戏中的名字采用客户端实例显示名，已打开的交互界面可能需要关闭后重新打开才能刷新；对象尚未出场时，会在召唤后应用。
+
+管理窗口可直接发起召唤，无需先进入原版召唤交互。新建实例时使用原版同行出场方式，在当前角色附近寻找出场位置；仍沿用游戏自身检查，不能保证所有地点都允许出场。已经在场的伴侣会复用现有实例，不能把它当作传送到身边。无已婚对象、入口不兼容或上一条请求尚未处理时，召唤按钮不可用。游戏内出场、位置及跟随效果仍需实机确认。
+
+可在插件旁的 `CohabitationGateExperiment.ini` 的已有 `[UI]` 分区修改管理热键，例如：
+
+```ini
+[UI]
+ManagerHotkey=Ctrl+F9
+```
+
+支持 `F1`～`F24`、`A`～`Z`、`0`～`9`，以及 `Insert`、`Delete`、`Home`、`End`、`PageUp`、`PageDown`、`Pause`、`ScrollLock`、`NumLock`、`Space`、`Tab`、`Backspace`、`Escape`。可加 `Ctrl`、`Alt`、`Shift`，如 `F9`、`Alt+M`、`Ctrl+Shift+F8`；不区分大小写，修饰键必须与配置一致。修改后约 **5 秒**生效，旧热键不再响应，窗口标题同步显示新热键。旧配置缺少该项或填写无效时使用 `F8`。
 
 名字统一保存在插件旁的 `CohabitationGateExperiment.ini` 的 `[PartnerNames]` 分区，不新增配置文件。按当前可操作角色、NPC 保存键和角色模板编号区分，重启、读档后自动恢复；相同三项编号的其他存档也会沿用该名字。名字不写入原版存档；关闭总开关会还原当前实例的显示名，但保留自定义配置，重新开启后继续应用。
 
@@ -60,7 +73,7 @@ Language=zh-CN
 
 - Windows x64，以及包含对应恋爱 / 婚姻系统的游戏内容。
 - 兼容的 x64 ASI Loader。本项目使用过 [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) 的 x64 `winmm.dll`。
-- v0.1.3 发布检查使用游戏 EXE **1.0.0.3527 / Steam build 26423880**；此前版本的分析基于 1.0.0.3462。其他版本需要以实际定位日志为准。
+- v0.1.4 发布检查使用游戏 EXE **1.0.0.3527 / Steam build 26423880**；此前版本的分析基于 1.0.0.3462。其他版本需要以实际定位日志为准。
 
 插件在启动时自动查找函数并检查结构。地址移动和部分虚表槽位变化可以自动处理；函数改名、逻辑或编译方式变化仍可能需要更新补丁。无法确认目标时停止对应功能，不强行写入未知位置。
 
@@ -68,11 +81,11 @@ Language=zh-CN
 
 ### 1. 下载发布文件
 
-打开 [v0.1.3 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.3)，下载附件：
+打开 [v0.1.4 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.4)，下载附件：
 
-- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.3/CohabitationGateExperiment.asi)：插件。
-- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.3/CohabitationGateExperiment.ini)：首次安装使用的默认配置。
-- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.3/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2；已有兼容加载器可继续使用。
+- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.4/CohabitationGateExperiment.asi)：插件。
+- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.4/CohabitationGateExperiment.ini)：首次安装使用的默认配置。
+- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.4/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2；已有兼容加载器可继续使用。
 - 附件中的 `MinHook-LICENSE.txt` 和 `Ultimate-ASI-Loader-LICENSE.txt` 为第三方许可证，再分发时一并保留。
 
 
@@ -89,7 +102,7 @@ Language=zh-CN
 ### 3. 安装加载器和补丁
 
 
-首次安装时，把 `.asi`、`.dll` 和 `.ini` 放到游戏的 `bin64` 目录。盘符和 Steam 库路径以自己的安装位置为准：
+首次安装时，把 `.asi`、`.dll` 和 `.ini` 放到游戏的 `bin64` 目录；没有 INI 时，插件会在首次启动游戏时自动生成。盘符和 Steam 库路径以自己的安装位置为准：
 
 ```text
 Crimson Desert/
@@ -105,7 +118,9 @@ Crimson Desert/
 
 ## 配置说明
 
-所有开关使用 `1` 开启、`0` 关闭；`PreferredPartnerKey` 是对象编号，`Language` 是语言代码。`Enabled` 控制全部功能。开关、优先编号和语言约每 **5 秒**重新读取；在弹窗内操作会立即生效并保存。手动编辑 `[PartnerNames]` 后需重启插件，建议通过 F8 修改名字。
+所有开关使用 `1` 开启、`0` 关闭；`PreferredPartnerKey` 是对象编号，`Language` 是语言代码，`ManagerHotkey` 是管理窗口热键。`Enabled` 控制全部功能。开关、优先编号、语言和热键约每 **5 秒**重新读取；在弹窗内操作会立即生效并保存。手动编辑 `[PartnerNames]` 后需重启插件，建议通过管理窗口修改名字。
+
+升级时退出游戏、只替换 ASI，保留已有 INI。下次启动会根据插件内置默认配置自动补齐缺失的分区、配置项和说明，无需手动复制新增键。已有值（含 0、空值和无效值）、注释、自定义热键及名字始终保留；配置完整时不改写。日志 `CONFIG UPDATED` 表示补入了缺失项。
 
 ### 完整配置示例
 
@@ -139,6 +154,8 @@ BeautyPartnerPicker=1
 SpawnAllPartners=1
 
 [UI]
+; 管理窗口热键：F9、Ctrl+F8、Alt+M 等；缺失或无效时使用 F8。
+ManagerHotkey=F8
 ; zh-CN 简体中文；en-US English。
 Language=zh-CN
 
@@ -162,11 +179,12 @@ Language=zh-CN
 | `Relationships` | `PreferredPartnerKey` | `0` | `0` 自动选择；非零值指定当前角色的一位真实已婚对象；F8 窗口可直接设置 |
 | `Relationships` | `BeautyPartnerPicker` | `1` | 点击伴侣美容后显示插件选择窗口，支持双击、确定和取消 |
 | `UI` | `Language` | `zh-CN` | 两个弹窗共用界面语言，可设置为 `zh-CN` 或 `en-US` |
+| `UI` | `ManagerHotkey` | `F8` | 管理窗口热键，支持单键及 Ctrl / Alt / Shift 组合，约 5 秒刷新 |
 | `Relationships` | `SpawnAllPartners` | `1` | 全员召唤 / 收回，并在读档时分别恢复已保存为同行的伴侣 |
 
 多人同行恢复需要 `Enabled=1`、`SpawnAllPartners=1`，并在加载日志中看到 `PARTNER RESTORE HOOK INSTALLED` 和 `PartnerRestoreActive=1`。先对需要跟随的伴侣分别选择“结伴同行”并保存，再读档；选择“等待”的对象保持原状态。读档后日志 `PARTNER RESTORE` 中的 `followRequests` 表示原版请求恢复同行的人数，实际出场和跟随仍需游戏内确认。入口无法兼容时会记录 `PARTNER RESTORE UNAVAILABLE` 并保留原版恢复行为。游戏已读档后才开启开关，需要重新读档才能触发。
 
-表中是发布 INI 的默认值。删除配置文件或键时，插件仍使用关闭兜底（仅同居子开关缺省为 `1`），请保留完整配置。
+表中是默认 INI 的值。启动时，缺失项会按这些默认值补齐，已有值不会被覆盖。补全失败时保留原文件并记录 `CONFIG DEFAULTS FAILED`，读取仍使用原有兜底值。
 
 五项条件覆盖作用于对应条件的所有调用，其他任务或互动也可能受到影响。它们不会跳过所有剧情或关系阶段，也不会为缺少婚礼内容的 NPC 自动补齐脚本。
 

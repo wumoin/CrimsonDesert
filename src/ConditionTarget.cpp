@@ -3,6 +3,7 @@
 #include "MarriageCommit.h"
 #include "BeautyPicker.h"
 #include "PartnerManager.h"
+#include "PartnerSummon.h"
 #include "../vendor/minhook/src/hde/hde64.h"
 #include <algorithm>
 #include <cstdint>
@@ -159,6 +160,26 @@ public:
     bool functionSize(DWORD rva, DWORD& length) const {
         DWORD begin = 0;
         return functionRange(rva, begin, length) && begin == rva;
+    }
+    bool functionRoot(DWORD rva,DWORD& root) const {
+        RUNTIME_FUNCTION fn{};bool found=false;
+        for(DWORD at=0;at+sizeof(fn)<=exceptions.Size;at+=sizeof(fn)) {
+            if(!read(exceptions.VirtualAddress+at,fn))return false;
+            if(rva>=fn.BeginAddress && rva<fn.EndAddress){found=true;break;}
+            if(fn.BeginAddress>rva)break;
+        }
+        if(!found)return false;
+        for(unsigned depth=0;depth<8;++depth) {
+            BYTE header[4]{};
+            if(!contains(fn.UnwindData,sizeof(header)))return false;
+            std::memcpy(header,base+fn.UnwindData,sizeof(header));
+            if((header[0]&7)!=1)return false;
+            if(!(header[0]&0x20)){root=fn.BeginAddress;return contains(root,1,true);}
+            const DWORD chained=fn.UnwindData+4+((static_cast<DWORD>(header[2])+1)&~1u)*2;
+            RUNTIME_FUNCTION parent{};if(!read(chained,parent) || parent.BeginAddress>=fn.BeginAddress)return false;
+            fn=parent;
+        }
+        return false;
     }
 };
 
@@ -742,7 +763,7 @@ namespace {
 bool codeHas(const Image& image, DWORD begin, DWORD length, const unsigned char* needle, std::size_t size) {
     return length >= size && std::search(image.base + begin, image.base + begin + length, needle, needle + size) != image.base + begin + length;
 }
-std::vector<std::pair<DWORD, DWORD>> callsIn(const Image& image, DWORD begin, DWORD length) {
+std::vector<std::pair<DWORD, DWORD>> callsIn(const Image& image, DWORD begin, DWORD length,bool stopAtReturn=true) {
     std::vector<std::pair<DWORD, DWORD>> calls;
     for (DWORD at = 0; at < length;) {
         hde64s ins{}; unsigned char bytes[16]{};
@@ -754,13 +775,13 @@ std::vector<std::pair<DWORD, DWORD>> callsIn(const Image& image, DWORD begin, DW
             if (dest > 0 && dest < image.size && image.contains(static_cast<DWORD>(dest), 1, true))
                 calls.push_back({begin + at, static_cast<DWORD>(dest)});
         }
-        if (ins.opcode == 0xc3) break; // 后面的跳转表不是指令。
+        if (ins.opcode == 0xc3 && stopAtReturn) break; // 后面的跳转表不是指令。
         at += size;
     }
     return calls;
 }
 // 请求类型的主虚表由 RTTI 识别；这里只接受已验证的三参数请求处理方法布局。
-bool requestHandler(const Image& image, const char* name, NativeRequestHandler& handler) {
+bool requestHandler(const Image& image, const char* name, NativeRequestHandler& handler,DWORD* vtable=nullptr) {
     const auto size = std::strlen(name) + 1;
     std::vector<DWORD> types, cols;
     for (const auto& span : image.spans) {
@@ -790,7 +811,7 @@ bool requestHandler(const Image& image, const char* name, NativeRequestHandler& 
             if (i + 4 <= length && q[0] == 0x48 && q[1] == 0x83 && (q[2] & 0xf8) == 0xe8 && q[3] == 5) sizeCheck = true;
         }
         if (!payload || !sizeCheck) continue;
-        handler = reinterpret_cast<NativeRequestHandler>(method); ++matches;
+        handler = reinterpret_cast<NativeRequestHandler>(method);if(vtable)*vtable=static_cast<DWORD>(at+8);++matches;
     }
     return matches == 1;
 }
@@ -1117,7 +1138,8 @@ bool FindBeautyUiTarget(HMODULE module,const MarriageCommitTarget& marriage,Beau
             if(offset>0x100 && offset<4096)target.modeOffset=offset;
         }
     }
-    unsigned worlds=0;
+    unsigned worlds=0,players=0,playerWorldManager=0;
+    void** playerWorld=nullptr;
     for(const auto& call:callsIn(image,begin,length)) {
         DWORD size=0;
         if(!image.functionSize(call.second,size) || size>128)continue;
@@ -1128,6 +1150,26 @@ bool FindBeautyUiTarget(HMODULE module,const MarriageCommitTarget& marriage,Beau
             const auto helper=static_cast<std::int64_t>(call.second)+j+16+rel;
             DWORD hs=0;
             if(helper<=0 || helper>=image.size || !image.functionSize(static_cast<DWORD>(helper),hs))continue;
+            std::memcpy(&rel,q+3,4);
+            const auto slot=static_cast<std::int64_t>(call.second)+j+7+rel;
+            if(slot<=0 || slot>=image.size || !image.contains(static_cast<DWORD>(slot),8))continue;
+            auto* ptr=reinterpret_cast<void**>(image.base+slot);
+            // 原生美容还调用主玩家 getter：直接读取 manager 字段，验证对象后写入返回包装。
+            constexpr unsigned char playerResult[]={0x48,0x89,0x7b,8};
+            constexpr unsigned char validateObject[]={0xff,0x90,0xc0,0,0,0};
+            if(hs<=256 && codeHas(image,static_cast<DWORD>(helper),hs,playerResult,sizeof(playerResult)) &&
+                codeHas(image,static_cast<DWORD>(helper),hs,validateObject,sizeof(validateObject))) {
+                unsigned offset=0,fields=0;
+                for(DWORD k=0;k+7<=hs;++k) {
+                    const auto h=image.base+helper+k;
+                    if(h[0]==0x48 && h[1]==0x8b && h[2]==0x79 && h[3] &&
+                        h[4]==0x48 && h[5]==0x85 && h[6]==0xff){offset=h[3];++fields;}
+                }
+                if(fields==1) {
+                    if(!playerWorld){playerWorld=ptr;playerWorldManager=q[10];target.managerPlayer=offset;++players;}
+                    else if(playerWorld!=ptr || playerWorldManager!=q[10] || target.managerPlayer!=offset)++players;
+                }
+            }
             unsigned session=0,actor=0;
             for(DWORD k=0;k+7<=hs;++k) {
                 const auto h=image.base+helper+k;
@@ -1135,10 +1177,6 @@ bool FindBeautyUiTarget(HMODULE module,const MarriageCommitTarget& marriage,Beau
                 if(h[0]==0x4c && h[1]==0x8b && h[2]==0xb0)std::memcpy(&actor,h+3,4);
             }
             if(!session || !actor || actor>4096)continue;
-            std::memcpy(&rel,q+3,4);
-            const auto slot=static_cast<std::int64_t>(call.second)+j+7+rel;
-            if(slot<=0 || slot>=image.size || !image.contains(static_cast<DWORD>(slot),8))continue;
-            auto* ptr=reinterpret_cast<void**>(image.base+slot);
             if(!target.clientWorld) {target.clientWorld=ptr;target.worldManager=q[10];target.managerSession=session;target.sessionActor=actor;++worlds;}
             else if(target.clientWorld!=ptr || target.sessionActor!=actor || target.managerSession!=session)++worlds;
         }
@@ -1170,7 +1208,8 @@ bool FindBeautyUiTarget(HMODULE module,const MarriageCommitTarget& marriage,Beau
             }
         }
     }
-    return target.modeOffset && worlds==1 && target.clientWorld;
+    return target.modeOffset && worlds==1 && players==1 && target.clientWorld &&
+        playerWorld==target.clientWorld && playerWorldManager==target.worldManager && target.managerPlayer!=target.managerSession;
 }
 
 bool FindPartnerNameTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerNameTarget& target,const char** error) {
@@ -1242,4 +1281,108 @@ bool FindPartnerNameTarget(HMODULE module,const MarriageCommitTarget& marriage,P
     if(registries!=1){if(error)*error=registries?"native client actor registry ambiguous":"native client actor registry not verified";return false;}
     if(error)*error=nullptr;
     target=found;return true;
+}
+
+bool FindPartnerSummonTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerSummonTarget& target,const char*& error) {
+    target={};Image image;NativeRequestHandler handler=nullptr;DWORD vtable=0;
+    error="native summon request ABI not verified";
+    if(!image.open(module) || !marriage.lookupRva || !marriage.spawnRva ||
+        !requestHandler(image,".?AVTrocTrSpawnOrUnspawnLivingTogetherNpcReq@pa@@",handler,&vtable))return false;
+    DWORD packet=0;unsigned descriptors=0;
+    for(const auto& span:image.spans)if(span.executable)for(DWORD at=span.begin;at+14<=span.end;++at) {
+        const auto p=image.base+at;
+        if(p[0]!=0x48 || p[1]!=0x8d || p[2]!=5 || p[7]!=0x48 || p[8]!=0x89 || p[9]!=5)continue;
+        std::int32_t relative=0;std::memcpy(&relative,p+3,4);
+        if(static_cast<std::int64_t>(at)+7+relative!=vtable)continue;
+        std::memcpy(&relative,p+10,4);const auto metadata=static_cast<std::int64_t>(at)+14+relative;
+        DWORD identifier=0;
+        if(metadata>0 && metadata+16<image.size && image.read(static_cast<DWORD>(metadata)+12,identifier) && identifier && identifier<0xffff) {
+            packet=identifier;++descriptors;
+        }
+    }
+    if(descriptors!=1){error="native summon packet descriptor not unique";return false;}
+    std::vector<DWORD> dispatchRoots;
+    for(const auto& span:image.spans)if(span.executable)for(DWORD at=span.begin;at+5<=span.end;++at) {
+        if(image.base[at]!=0xe8)continue;std::int32_t relative=0;std::memcpy(&relative,image.base+at+1,4);
+        if(static_cast<std::int64_t>(at)+5+relative!=marriage.spawnRva)continue;
+        DWORD root=0;if(image.functionRoot(at,root))dispatchRoots.push_back(root);
+    }
+    DWORD handlerRva=0,handlerSize=0;
+    if(!image.pointerRva(reinterpret_cast<std::uintptr_t>(handler),handlerRva) || !image.functionSize(handlerRva,handlerSize))return false;
+    unsigned dispatches=0;bool rawReader=false;
+    std::vector<std::pair<DWORD,BYTE>> booleanReads;
+    constexpr BYTE readByte[]={0x0f,0xb6,0x0c,0x01,0x88,0x4a,0xff};
+    constexpr BYTE readOwner[]={0x48,0x8b,0x3a};
+    for(const auto& call:callsIn(image,handlerRva,handlerSize)) {
+        DWORD size=0;const bool sized=image.functionSize(call.second,size);
+        // 原版逐字节读取器是无栈帧叶函数，可能没有 x64 异常表项。
+        constexpr BYTE readerHead[]={0x4c,0x8b,0xc9,0x8b,0x49,0x2c};
+        if(!sized && image.contains(call.second,96,true) && !std::memcmp(image.base+call.second,readerHead,sizeof(readerHead)))size=96;
+        if(size && codeHas(image,call.second,size,readByte,sizeof(readByte))) {
+            rawReader=true;
+            for(DWORD at=call.first>(handlerRva+40)?call.first-40:handlerRva;at+4<=call.first;++at) {
+                const auto p=image.base+at;
+                if(p[0]==0x48 && p[1]==0x8d && p[2]==0x55)booleanReads.push_back({call.first,p[3]});
+            }
+        }
+        if(!sized)continue;
+        if(std::find(dispatchRoots.begin(),dispatchRoots.end(),call.second)==dispatchRoots.end() ||
+            !codeHas(image,call.second,size,readOwner,sizeof(readOwner)))continue;
+        if(call.first<handlerRva+14)continue;
+        const auto arguments=image.base+call.first-14;
+        constexpr BYTE keyAddress[]={0x4c,0x8d,0x4d},booleanAddress[]={0x4c,0x8d,0x45};
+        if(std::memcmp(arguments,keyAddress,sizeof(keyAddress)) || std::memcmp(arguments+4,booleanAddress,sizeof(booleanAddress)))continue;
+        bool rawArgument=false;
+        for(const auto& boolean:booleanReads)if(boolean.first<call.first && boolean.second==arguments[7]) {
+            bool untouched=true;
+            for(DWORD at=boolean.first+5;at<call.first;) {
+                hde64s instruction{};BYTE bytes[16]{};std::memcpy(bytes,image.base+at,(std::min)(DWORD{15},call.first-at));
+                const auto count=hde64_disasm(bytes,&instruction);
+                if(!count || (instruction.flags&F_ERROR) || count>call.first-at){untouched=false;break;}
+                if((instruction.flags&F_MODRM) && instruction.modrm_mod==1 && instruction.modrm_rm==5 && !instruction.rex_b &&
+                    instruction.disp.disp8==boolean.second && instruction.opcode!=0x8d && instruction.opcode!=0x8a && instruction.opcode!=0x8b &&
+                    !(instruction.opcode==0x0f && (instruction.opcode2==0xb6 || instruction.opcode2==0xb7))){untouched=false;break;}
+                at+=count;
+            }
+            if(untouched)rawArgument=true;
+        }
+        if(!rawArgument)continue;
+        if(!target.dispatch){target.dispatchRva=call.second;target.dispatch=reinterpret_cast<NativePartnerSummonDispatch>(image.base+call.second);++dispatches;}
+        else if(target.dispatchRva!=call.second)++dispatches;
+    }
+    if(dispatches!=1 || !rawReader){error=rawReader?"native summon server dispatcher not unique":"native summon byte reader not compatible";return false;}
+    unsigned senders=0;
+    constexpr BYTE oneByte[]={0x41,0xb8,1,0,0,0},fourBytes[]={0x41,0xb8,4,0,0,0};
+    constexpr BYTE peerSlot[]={0x48,0x8b,3,0x48,0x8b,0xcb,0xff,0x90,0x68,1,0,0};
+    constexpr BYTE rawWrite[]={0x44,0x8b,0xc7,0x48,0x03,0x4b,0x10};
+    for(const auto& span:image.spans)if(span.executable)for(DWORD at=span.begin;at+5<=span.end;++at) {
+        if(image.base[at]!=0xe8)continue;std::int32_t relative=0;std::memcpy(&relative,image.base+at+1,4);
+        if(static_cast<std::int64_t>(at)+5+relative!=marriage.lookupRva)continue;
+        DWORD begin=0,length=0;if(!image.functionRange(at,begin,length) || length>512)continue;
+        const auto calls=callsIn(image,begin,length,false);
+        for(std::size_t i=0;i+1<calls.size();++i) {
+            const auto info=calls[i],send=calls[i+1];const auto q=image.base+info.first+5;
+            if(info.first<begin+2 || info.first+9>begin+length || image.base[info.first-2]!=0x8b ||
+                (image.base[info.first-1]&0xf8)!=0xd0 || q[0]!=0x4c || q[1]!=0x8d || q[2]!=0x48 || !q[3] || q[3]>=128)continue;
+            DWORD size=0;if(!image.functionSize(send.second,size) || size>1024)continue;
+            const auto peer=std::search(image.base+send.second,image.base+send.second+size,std::begin(peerSlot),std::end(peerSlot));
+            if(peer==image.base+send.second+size)continue;
+            const auto payloadSize=static_cast<DWORD>(peer-(image.base+send.second));
+            if(!codeHas(image,send.second,payloadSize,oneByte,sizeof(oneByte)) || !codeHas(image,send.second,payloadSize,fourBytes,sizeof(fourBytes)))continue;
+            bool samePacket=false,rawWriter=false;
+            for(DWORD j=0;j+5<=size;++j)if(image.base[send.second+j]==0xb9) {
+                DWORD identifier=0;std::memcpy(&identifier,image.base+send.second+j+1,4);if(identifier==packet)samePacket=true;
+            }
+            for(const auto& writer:callsIn(image,send.second,size)) {
+                DWORD writerSize=0;if(image.functionSize(writer.second,writerSize) && codeHas(image,writer.second,writerSize,rawWrite,sizeof(rawWrite)))rawWriter=true;
+            }
+            if(!samePacket || !rawWriter)continue;
+            if(!target.send) {
+                target.sendRva=send.second;target.send=reinterpret_cast<NativePartnerSummonSend>(image.base+send.second);
+                target.playableInfo=reinterpret_cast<NativePlayableInfo>(image.base+info.second);target.playableKeyOffset=q[3];++senders;
+            } else if(target.sendRva!=send.second || reinterpret_cast<const BYTE*>(target.playableInfo)!=image.base+info.second || target.playableKeyOffset!=q[3])++senders;
+        }
+    }
+    if(senders!=1){error="native summon client sender/playable key ABI not unique";target={};return false;}
+    error=nullptr;return true;
 }

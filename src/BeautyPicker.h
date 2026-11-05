@@ -7,7 +7,7 @@ struct BeautyUiTarget {
     NativeBeautyEntry entry=nullptr;
     void** clientWorld=nullptr;
     void** characters=nullptr;
-    unsigned worldManager=0, managerSession=0, sessionActor=0;
+    unsigned worldManager=0, managerSession=0, sessionActor=0, managerPlayer=0;
     unsigned modeOffset=0, nameOffset=0;
 };
 struct BeautyPartnerOption { DWORD key=0; std::uint16_t character=0xffff; DWORD actorId=0; };

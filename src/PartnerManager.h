@@ -15,6 +15,7 @@ using SavePreferredPartner = bool(*)(DWORD);
 void ConfigurePartnerManager(const wchar_t* iniPath,SavePreferredPartner save,PluginLog log);
 void InstallPartnerManager(HMODULE module,const MarriageCommitTarget& marriage);
 void SetPartnerManagerEnabled(bool enabled,bool preferenceEnabled);
+void ReloadPartnerManagerHotkey();
 // 在插件工作线程轮询；窗口和名字更新由游戏窗口线程处理。
 void PollPartnerManager();
 std::wstring PartnerDisplayName(std::uint16_t playable,const BeautyPartnerOption& partner,unsigned index);

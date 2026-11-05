@@ -6,6 +6,41 @@ namespace {
 std::wstring testIni;
 int finishMode=0;
 unsigned nativeEditorCalls=0;
+void testPlayerContext() {
+    const auto previousUi=ui;const auto previousMarriage=marriage;
+    BYTE world[0x100]{},manager[0x100]{},session[0x200]{},owner[0x100]{},ownerComponents[0x200]{};
+    BYTE controlled[0x100]{},controlledComponents[0x200]{},ownerStatus[0x80]{},controlledStatus[0x80]{},contents[0x300]{};
+    const auto pointer=[](void* object,unsigned offset,void* value){std::memcpy(static_cast<BYTE*>(object)+offset,&value,sizeof(value));};
+    const auto role=[](void* status,std::uint16_t value){std::memcpy(static_cast<BYTE*>(status)+0x30,&value,sizeof(value));};
+    void* worldPointer=world;
+    ui={};ui.clientWorld=&worldPointer;ui.worldManager=0x30;ui.managerSession=0x58;ui.sessionActor=0xd8;ui.managerPlayer=0x50;
+    marriage={};marriage.npcKeyOffsets[0]=0x68;marriage.npcKeyOffsets[1]=0x20;
+    marriage.runtime.contentsComponentOffset=0x168;marriage.runtime.playableIndexOffset=0x30;
+    pointer(world,0x30,manager);pointer(manager,0x58,session);pointer(manager,0x50,owner);
+    pointer(owner,0x68,ownerComponents);pointer(ownerComponents,0x20,ownerStatus);pointer(ownerComponents,0x168,contents);
+    pointer(contents,8,owner);pointer(controlled,0x68,controlledComponents);pointer(controlledComponents,0x20,controlledStatus);
+    PartnerUiContext context{};pointer(session,0xd8,owner);role(ownerStatus,0);
+    assert(ReadPartnerUiContext(context) && context.actor==owner && context.component==contents && context.playable==0);
+    // 实机德米安为编号 3，操控实体的 contents 为空；关系数据仍在主玩家对象上。
+    pointer(session,0xd8,controlled);
+    for(const std::uint16_t playable:{std::uint16_t{1},std::uint16_t{3}}) {
+        role(controlledStatus,playable);
+        if(!ReadPartnerUiContext(context) || context.component!=contents) {
+            std::puts("FAIL: switched protagonist without its own contents must use main-player relationship data.");std::exit(1);
+        }
+        assert(context.actor==controlled && context.component==contents && context.playable==playable);
+    }
+    const auto reject=[&] {assert(!ReadPartnerUiContext(context));};
+    pointer(contents,8,controlled);reject();pointer(contents,8,owner);
+    pointer(manager,0x50,nullptr);reject();pointer(manager,0x50,owner);
+    pointer(session,0xd8,nullptr);reject();pointer(session,0xd8,controlled);
+    pointer(controlledComponents,0x20,nullptr);reject();pointer(controlledComponents,0x20,controlledStatus);
+    pointer(ownerComponents,0x168,nullptr);reject();pointer(ownerComponents,0x168,contents);
+    role(controlledStatus,0xffff);reject();role(controlledStatus,3);
+    worldPointer=nullptr;reject();
+    ui=previousUi;marriage=previousMarriage;
+    puts("PASS: actual controlled-role/player-owner pointer chain, switched protagonist without contents, missing/mismatched context guards.");
+}
 Choice previewChoices() {
     Choice data;data.playable=0;
     data.partners={{435,3006,0},{1178,1036,0},{1179,2211,0},{1180,2211,0}};
@@ -108,6 +143,6 @@ int wmain(int argc,wchar_t** argv) {
         Choice data=previewChoices();const auto layout=beautyLayout();
         assert(DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),
             nullptr,dialog,reinterpret_cast<LPARAM>(&data))!=-1);
-    } else testBeautyFlow();
+    } else {testPlayerContext();testBeautyFlow();}
     DeleteFileW(testIni.c_str());puts("All beauty picker tests passed.");return 0;
 }

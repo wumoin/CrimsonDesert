@@ -37,13 +37,20 @@ bool isPartnerBeauty(void* payload) {
     return false;
 }
 bool player(void*& actor,void*& component,std::uint16_t& playable) {
-    void* at=nullptr;void* components=nullptr;void* status=nullptr;
-    return read(&at,ui.clientWorld,8) && field(at,ui.worldManager,at) &&
-        field(at,ui.managerSession,at) && field(at,ui.sessionActor,actor) &&
-        field(actor,marriage.npcKeyOffsets[0],components) &&
-        field(components,marriage.runtime.contentsComponentOffset,component) &&
-        field(components,marriage.npcKeyOffsets[1],status) &&
-        field(status,marriage.runtime.playableIndexOffset,playable);
+    void* world=nullptr;void* manager=nullptr;void* session=nullptr;void* controlled=nullptr;
+    void* components=nullptr;void* status=nullptr;void* owner=nullptr;void* contents=nullptr;void* contentsOwner=nullptr;
+    void* current=nullptr;std::uint16_t role=0xffff;
+    // 原生美容分别读取当前操控实体与主玩家；切换主角后关系组件仍属于主玩家。
+    if(!ui.managerPlayer || !read(&world,ui.clientWorld,sizeof(world)) || !field(world,ui.worldManager,manager) ||
+        !field(manager,ui.managerSession,session) || !field(session,ui.sessionActor,controlled) || !controlled ||
+        !field(controlled,marriage.npcKeyOffsets[0],components) || !field(components,marriage.npcKeyOffsets[1],status) ||
+        !field(status,marriage.runtime.playableIndexOffset,role) || role==0xffff ||
+        !field(manager,ui.managerPlayer,owner) || !owner || !field(owner,marriage.npcKeyOffsets[0],components) ||
+        !field(components,marriage.runtime.contentsComponentOffset,contents) || !contents ||
+        !field(contents,8,contentsOwner) || contentsOwner!=owner ||
+        !field(session,ui.sessionActor,current) || current!=controlled ||
+        !field(manager,ui.managerPlayer,current) || current!=owner)return false;
+    actor=controlled;component=contents;playable=role;return true;
 }
 std::wstring partnerName(const BeautyPartnerOption& partner,unsigned index) {
     void* manager=nullptr;void* cache=nullptr;void* info=nullptr;void* name=nullptr;void* vt=nullptr;void* method=nullptr;

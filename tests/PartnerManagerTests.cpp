@@ -11,6 +11,9 @@ std::vector<BeautyPartnerOption> testPartners{{635,50,0x1001},{644,50,0x1002}};
 DWORD savedPreference=0;
 bool contextAvailable=true,saveAllowed=true;
 unsigned assignments=0;
+bool summonReady=true,summonBusy=false;unsigned summonRequests=0;DWORD summonedKey=0;
+SHORT hotkeyStates[256]{};
+SHORT WINAPI readHotkeyState(int key){assert(key>=0 && key<256);return hotkeyStates[key];}
 constexpr char configComment[]=u8"; 中文注释：保留原配置与编码\r\n";
 void seedSettings(const std::wstring& path) {
     FILE* file=nullptr;assert(!_wfopen_s(&file,path.c_str(),L"wb") && file);
@@ -128,6 +131,35 @@ void testUiLanguageSettings() {
     assert(GetPrivateProfileIntW(L"Relationships",L"PreferredPartnerKey",0,settingsPath.c_str())==42);
     puts("PASS: shared language persistence/reload, invalid/missing defaults, save failure and complete translations.");
 }
+void testHotkeys() {
+    struct Sample {const wchar_t* text;unsigned key,modifiers;};
+    for(const auto& sample:{Sample{L"F1",VK_F1,0},Sample{L"f24",VK_F24,0},Sample{L"Ctrl+F8",VK_F8,PartnerCtrl},
+        Sample{L" alt + shift + m ",L'M',PartnerAlt|PartnerShift},Sample{L"9",L'9',0},
+        Sample{L"Insert",VK_INSERT,0},Sample{L"PgUp",VK_PRIOR,0},Sample{L"Control+Alt+Shift+Home",VK_HOME,7}}) {
+        PartnerHotkey parsed;assert(ParsePartnerHotkey(sample.text,parsed));
+        assert(parsed.key==sample.key && parsed.modifiers==sample.modifiers);
+        PartnerHotkey roundtrip;assert(ParsePartnerHotkey(PartnerHotkeyLabel(parsed),roundtrip) && roundtrip==parsed);
+    }
+    for(const auto* text:{L"",L" ",L"F0",L"F25",L"Ctrl",L"+F8",L"F8+",L"Ctrl++F8",L"Ctrl+Ctrl+F8",L"F8+F9",L"F8+Ctrl",L"无效键"}) {
+        PartnerHotkey parsed{VK_F9,PartnerAlt};assert(!ParsePartnerHotkey(text,parsed));assert(parsed==PartnerHotkey({VK_F9,PartnerAlt}));
+    }
+    const PartnerHotkey combo{VK_F9,PartnerCtrl|PartnerShift};
+    hotkeyStates[VK_F9]=static_cast<SHORT>(0x8000);hotkeyStates[VK_CONTROL]=static_cast<SHORT>(0x8000);
+    assert(!PartnerHotkeyDown(combo,readHotkeyState));hotkeyStates[VK_SHIFT]=static_cast<SHORT>(0x8000);
+    assert(PartnerHotkeyDown(combo,readHotkeyState) && PartnerHotkeyMatches(combo,VK_F9,readHotkeyState));
+    assert(!PartnerHotkeyMatches(combo,VK_F8,readHotkeyState) && !PartnerHotkeyDown({VK_F9,0},readHotkeyState));
+    hotkeyStates[VK_MENU]=static_cast<SHORT>(0x8000);assert(!PartnerHotkeyDown(combo,readHotkeyState));
+    std::memset(hotkeyStates,0,sizeof(hotkeyStates));assert(!PartnerHotkeyDown(combo,readHotkeyState));
+    assert(GetPartnerHotkey()==PartnerHotkey{});
+    assert(WritePrivateProfileStringW(L"UI",L"ManagerHotkey",L"Ctrl+F9",settingsPath.c_str()));ReloadPartnerManagerHotkey();
+    assert(GetPartnerHotkey()==PartnerHotkey({VK_F9,PartnerCtrl}) && PartnerHotkeyLabel()==L"Ctrl+F9");
+    assert(WritePrivateProfileStringW(L"UI",L"ManagerHotkey",L"unknown",settingsPath.c_str()));ReloadPartnerManagerHotkey();
+    assert(GetPartnerHotkey()==PartnerHotkey{});
+    wchar_t stored[32]{};GetPrivateProfileStringW(L"UI",L"ManagerHotkey",L"",stored,32,settingsPath.c_str());assert(!wcscmp(stored,L"unknown"));
+    assert(WritePrivateProfileStringW(L"UI",L"ManagerHotkey",nullptr,settingsPath.c_str()));ReloadPartnerManagerHotkey();
+    assert(GetPartnerHotkey()==PartnerHotkey{});verifySharedSettings();
+    puts("PASS: configurable hotkey parsing, aliases/modifiers, key matching, live INI reload, invalid/missing F8 fallback and preserved settings.");
+}
 void testStorageAndRuntime() {
     const auto& a=testPartners[0];const auto& b=testPartners[1];
     assert(saveName(0,a,L"小红"));assert(saveName(0,b,L"小蓝"));
@@ -188,6 +220,39 @@ void testDialogFlow() {
         nullptr,testDialog,reinterpret_cast<LPARAM>(&data));
     assert(result==IDCANCEL);puts("PASS: native dialog selection, immediate preference, Chinese rename/reset and stale-context blocking.");
 }
+void changeManagerLanguage(HWND window,UiLanguage language);
+void CALLBACK driveSummonDialog(HWND window,UINT,UINT_PTR timer,DWORD) {
+    KillTimer(window,timer);
+    auto* data=reinterpret_cast<ManagerDialog*>(GetWindowLongPtrW(window,DWLP_USER));assert(data);
+    assert(IsWindowEnabled(GetDlgItem(window,summonId)));
+    const auto requests=summonRequests;
+    summonReady=false;updateSummonState(window,*data);assert(!IsWindowEnabled(GetDlgItem(window,summonId)));
+    SendMessageW(window,WM_COMMAND,MAKEWPARAM(summonId,BN_CLICKED),0);assert(IsWindow(window) && summonRequests==requests);
+    summonReady=true;summonBusy=true;updateSummonState(window,*data);assert(!IsWindowEnabled(GetDlgItem(window,summonId)));
+    SendMessageW(window,WM_COMMAND,MAKEWPARAM(summonId,BN_CLICKED),0);assert(IsWindow(window) && summonRequests==requests);
+    summonBusy=false;
+    SendDlgItemMessageW(window,listId,LB_SETCURSEL,1,0);SendMessageW(window,WM_COMMAND,MAKEWPARAM(listId,LBN_SELCHANGE),0);
+    assert(data->selected==1 && IsWindowEnabled(GetDlgItem(window,summonId)));
+    for(const auto language:{UiLanguage::English,UiLanguage::Chinese}) {
+        changeManagerLanguage(window,language);
+        wchar_t text[128]{};GetDlgItemTextW(window,summonId,text,128);assert(!wcscmp(text,UiString(UiText::SummonSelected)));
+    }
+    SendMessageW(window,WM_COMMAND,MAKEWPARAM(summonId,BN_CLICKED),0);
+    assert(summonRequests==requests); // 对话框回调只结束模态窗口，不能提前发请求。
+}
+INT_PTR CALLBACK summonDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
+    const auto result=managerDialog(window,message,wp,lp);
+    if(message==WM_INITDIALOG)SetTimer(window,8,30,driveSummonDialog);return result;
+}
+void testManagerSummon() {
+    ManagerDialog data{testContext,testPartners,0,0,false};const auto layout=dialogLayout();
+    const auto preference=savedPreference;const auto requests=summonRequests,assigns=assignments;
+    assert(DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),nullptr,summonDialog,reinterpret_cast<LPARAM>(&data))==summonId);
+    assert(!managerWindow && summonRequests==requests && dispatchManagerSummon(data));
+    assert(summonRequests==requests+1 && summonedKey==testPartners[1].key && savedPreference==preference && assignments==assigns);
+    data.stale=true;assert(!dispatchManagerSummon(data));data.stale=false;data.selected=-1;assert(!dispatchManagerSummon(data));
+    assert(summonRequests==requests+1);puts("PASS: localized selected-summon button, unavailable/busy/stale/empty guards, request only after modal closes, no preference/name writes.");
+}
 std::wstring controlText(HWND window,int id) {
     wchar_t buffer[512]{};
     if(id)GetDlgItemTextW(window,id,buffer,512);else GetWindowTextW(window,buffer,512);
@@ -213,7 +278,7 @@ void CALLBACK driveLanguageDialog(HWND window,UINT,UINT_PTR timer,DWORD) {
         assert(GetUiLanguage()==language && data->selected==20);
         assert(SendDlgItemMessageW(window,listId,LB_GETCURSEL,0,0)==20);
         assert(SendDlgItemMessageW(window,listId,LB_GETTOPINDEX,0,0)==top);
-        assert(controlText(window,0)==UiString(UiText::ManagerTitle));
+        assert(controlText(window,0)==managerTitle());
         assert(controlText(window,nameId)==draft && controlText(window,statusId)==UiString(UiText::PreferredSaved));
         DWORD start=0,end=0;SendDlgItemMessageW(window,nameId,EM_GETSEL,reinterpret_cast<WPARAM>(&start),reinterpret_cast<LPARAM>(&end));
         assert(start==2 && end==6);
@@ -227,12 +292,21 @@ void CALLBACK driveLanguageDialog(HWND window,UINT,UINT_PTR timer,DWORD) {
     assert(WritePrivateProfileStringW(L"UI",L"Language",L"en-US",settingsPath.c_str()));
     std::thread([]{ReloadUiLanguage();}).join();
     MSG update{};while(PeekMessageW(&update,window,UiLanguageChangedMessage(),UiLanguageChangedMessage(),PM_REMOVE))DispatchMessageW(&update);
-    assert(controlText(window,0)==UiString(UiText::ManagerTitle,UiLanguage::English) && controlText(window,nameId)==draft);
+    assert(controlText(window,0)==managerTitle(UiLanguage::English) && controlText(window,nameId)==draft);
     const auto attributes=GetFileAttributesW(settingsPath.c_str());assert(SetFileAttributesW(settingsPath.c_str(),attributes|FILE_ATTRIBUTE_READONLY));
     changeManagerLanguage(window,UiLanguage::Chinese);
     assert(GetUiLanguage()==UiLanguage::English && SendDlgItemMessageW(window,UiLanguageComboId,CB_GETCURSEL,0,0)==1);
     assert(controlText(window,statusId)==UiString(UiText::LanguageSaveFailed,UiLanguage::English) && controlText(window,nameId)==draft);
     assert(SetFileAttributesW(settingsPath.c_str(),attributes));changeManagerLanguage(window,UiLanguage::Chinese);
+    for(const auto* binding:{L"Ctrl+F9",L"F8"}) {
+        assert(WritePrivateProfileStringW(L"UI",L"ManagerHotkey",binding,settingsPath.c_str()));
+        std::thread([]{ReloadPartnerManagerHotkey();}).join();
+        while(PeekMessageW(&update,window,dispatchMessage,dispatchMessage,PM_REMOVE))DispatchMessageW(&update);
+        assert(controlText(window,0)==managerTitle() && controlText(window,nameId)==draft);
+        assert(SendDlgItemMessageW(window,listId,LB_GETCURSEL,0,0)==20 && SendDlgItemMessageW(window,listId,LB_GETTOPINDEX,0,0)==top);
+        assert(assignments==calls && savedPreference==preference);
+    }
+    assert(WritePrivateProfileStringW(L"UI",L"ManagerHotkey",nullptr,settingsPath.c_str()));
     verifySharedSettings();EndDialog(window,IDCANCEL);
 }
 INT_PTR CALLBACK languageDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
@@ -295,7 +369,8 @@ LRESULT CALLBACK previewHost(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     if(message==WM_DESTROY){PostQuitMessage(0);return 0;}
     if(message==WM_PAINT) {
         PAINTSTRUCT paint{};const auto dc=BeginPaint(window,&paint);RECT bounds{};GetClientRect(window,&bounds);
-        DrawTextW(dc,L"独立测试窗口：按 F8 打开伴侣管理。\n测试使用模拟对象和临时配置，不连接游戏。",-1,&bounds,DT_CENTER|DT_VCENTER|DT_WORDBREAK);
+        const auto label=L"独立测试窗口：按 "+PartnerHotkeyLabel()+L" 打开伴侣管理。\n测试使用模拟对象和临时配置，不连接游戏。";
+        DrawTextW(dc,label.c_str(),-1,&bounds,DT_CENTER|DT_VCENTER|DT_WORDBREAK);
         EndPaint(window,&paint);return 0;
     }
     return DefWindowProcW(window,message,wp,lp);
@@ -315,6 +390,9 @@ bool ReadPartnerUiContext(PartnerUiContext& context){context=testContext;return 
 bool ReadBeautyPartners(void*,std::uint16_t,std::vector<BeautyPartnerOption>& partners){partners=testPartners;return contextAvailable;}
 std::wstring ReadPartnerOriginalName(const BeautyPartnerOption&,unsigned){return L"原生名字";}
 bool FindPartnerNameTarget(HMODULE,const MarriageCommitTarget&,PartnerNameTarget&,const char**){return false;}
+bool IsPartnerSummonReady(){return summonReady;}
+bool IsPartnerSummonBusy(){return summonBusy;}
+bool RequestPartnerSummon(const PartnerUiContext&,const BeautyPartnerOption& partner){++summonRequests;summonedKey=partner.key;return true;}
 
 int wmain(int argc,wchar_t** argv) {
     wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));
@@ -328,6 +406,6 @@ int wmain(int argc,wchar_t** argv) {
     if(argc>1 && !wcscmp(argv[1],L"--preview")) {
 #endif
         previewWithHotkey();
-    } else {testEncoding();testNativeNameFormats();testUiLanguageSettings();testStorageAndRuntime();testDialogFlow();testManagerLanguageFlow();testWindowRecreation();}
+    } else {testEncoding();testNativeNameFormats();testUiLanguageSettings();testHotkeys();testStorageAndRuntime();testDialogFlow();testManagerLanguageFlow();testManagerSummon();testWindowRecreation();}
     verifySharedSettings();DeleteFileW(settingsPath.c_str());puts("All partner manager tests passed.");return 0;
 }

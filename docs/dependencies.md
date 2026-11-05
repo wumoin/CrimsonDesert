@@ -9,6 +9,7 @@
 ## 编译
 
 - Visual Studio C++ x64 工具链、Windows SDK。
+- Windows SDK 的 `rc.exe` 将默认 INI 嵌入 ASI，升级时无需额外默认配置文件。
 - 构建脚本可使用 Visual Studio 自带的 `vswhere` 查找工具链。
 - `/MT` 静态链接 C/C++ 运行库；插件本身不要求另外安装 VC 运行库包。
 - [MinHook](https://github.com/TsudaKageyu/minhook) v1.3.4，固定提交 `c3fcafdc10146beb5919319d0683e44e3c30d537`。必要的 x64 源码位于 `vendor/minhook`，保持上游实现不变。用于提交、对象查询、实例创建 / 出场、交互请求及离婚的内联挂钩和指令解析，静态编译进插件，不需要额外运行时 DLL。

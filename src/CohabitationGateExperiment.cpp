@@ -9,6 +9,8 @@
 #include "BeautyPicker.h"
 #include "PartnerManager.h"
 #include "UiLanguage.h"
+#include "ConfigDefaults.h"
+#include "PartnerSummon.h"
 
 namespace {
 // 引擎使用 0=满足、1=不满足、2=上下文不可用，不能使用普通 bool 代替。
@@ -145,8 +147,7 @@ DWORD WINAPI run(void*) {
     wcscpy_s(iniPath, logPath);
     dot = wcsrchr(iniPath, L'.');
     wcscpy_s(dot, MAX_PATH - (dot - iniPath), L".ini");
-    ConfigurePartnerManager(iniPath,&savePreferredPartner,log);
-    log("Plugin loaded. v0.1.3: F8 partner manager, persistent display names, beauty selection and bilingual dialogs; native relationship guards.");
+    log("Plugin loaded. v0.1.4: selected partner summon, configurable manager hotkey, automatic INI completion and protagonist context guards.");
 
     // 全部定位成功才安装；配置暂时关闭的条件也先定位，便于运行中切换。
     for (unsigned i = 0; i < conditionCount; ++i) {
@@ -170,6 +171,14 @@ DWORD WINAPI run(void*) {
         originals[i] = reinterpret_cast<Evaluate>(target.evaluator);
     }
     log("PASS: all five unique RTTI/vtable/dispatch targets and evaluator compatibility checks.");
+    // 只在确认是真实游戏宿主后补齐配置，避免启动器/子进程也改写同一 INI。
+    const auto config=EnsureConfigDefaults(self,iniPath);
+    if(!config.success) {
+        char message[192];sprintf_s(message,"CONFIG DEFAULTS FAILED: error=%lu; existing settings and read fallbacks retained.",config.error);log(message);
+    } else if(config.changed) {
+        char message[192];sprintf_s(message,"CONFIG UPDATED: addedKeys=%u addedSections=%u; existing values, comments and partner names preserved.",config.addedKeys,config.addedSections);log(message);
+    }
+    ConfigurePartnerManager(iniPath,&savePreferredPartner,log);
 
     // 安装期间维持原版行为；任一槽安装失败时撤回之前安装的槽。
     unsigned installed = 0;
@@ -202,6 +211,7 @@ DWORD WINAPI run(void*) {
         if(now<nextSettings){Sleep(50);continue;}
         nextSettings=now+5000;
         ReloadUiLanguage();
+        ReloadPartnerManagerHotkey();
         AcquireSRWLockExclusive(&settingsLock);
         const auto settings = readSettings();
         SetBeautyPickerEnabled(settings.enabled && settings.beautyPicker);
@@ -211,6 +221,7 @@ DWORD WINAPI run(void*) {
         const bool spawnActive=settings.enabled && settings.spawnAllPartners && IsPartnerSpawnHookReady();
         SetMarriageCommitOverride(commitActive,settings.preferredPartnerKey,spawnActive,settings.enabled);
         SetPartnerManagerEnabled(settings.enabled,commitActive);
+        SetPartnerSummonEnabled(settings.enabled);
         ReleaseSRWLockExclusive(&settingsLock);
         if (settings.requested != oldRequested || static_cast<int>(settings.enabled) != oldEnabled ||
             static_cast<int>(settings.ignoreExistingMarriageOnCommit) != oldCommit || settings.preferredPartnerKey!=oldPartnerKey ||

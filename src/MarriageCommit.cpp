@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "MarriageCommit.h"
 #include "BeautyPicker.h"
+#include "PartnerSummon.h"
 #include "../vendor/minhook/include/MinHook.h"
 #include <cstdio>
 #include <cstring>
@@ -397,6 +398,14 @@ void* __fastcall replacementDivorceCurrent(void* component, DWORD* result) {
 
 void* __fastcall replacementPartnerCreate(void* component, DWORD* result, std::uint16_t playable,
     DWORD* actorId, const DWORD* npcKey, bool party) {
+    if(HasSelectedPartnerSummon()) {
+        DWORD selected=0,actual=0;std::uint16_t character=0xffff;
+        if(!ReadSelectedPartnerSummon(component,playable,selected,character) || !copyReadable(&actual,npcKey,sizeof(actual)) || actual!=selected) {
+            if(result)*result=installedTarget.runtime.unavailableResult;return result;
+        }
+        // 原版同行创建分支使用当前操控角色附近的位置；房屋分支使用住处出场点。
+        party=true;
+    }
     if (restorePass && party) restorePass->followRequested = true;
     DWORD key = 0, reused = 0, status = installedTarget.runtime.unavailableResult;
     if (InterlockedCompareExchange(&relationshipGuardsEnabled, 0, 0) && copyReadable(&key, npcKey, 4)) {
@@ -431,6 +440,12 @@ void* __fastcall replacementLookup(void* component,std::uint16_t playable) {
 
 void* __fastcall replacementSpawnControl(void* component,void* result,bool spawn,std::uint16_t playable) {
     try {
+        if(HasSelectedPartnerSummon() && !spawnRoute) {
+            DWORD key=0;std::uint16_t character=0xffff;PartnerActionObservation action{};action.result=installedTarget.runtime.unavailableResult;
+            if(spawn && ReadSelectedPartnerSummon(component,playable,key,character))
+                action=EvaluateSelectedPartnerSpawn(installedTarget,originalSpawnControl,component,playable,key,character);
+            ReportSelectedPartnerSummon(action);if(result)std::memcpy(result,&action.result,sizeof(action.result));return result;
+        }
         return EvaluatePartnerSpawnAction(installedTarget,originalSpawnControl,component,result,spawn,playable,
             InterlockedCompareExchange(&spawnAllEnabled,0,0)!=0);
     } catch (...) {
@@ -573,6 +588,15 @@ void* EvaluateLivingPartnerSelection(const MarriageCommitTarget& layout, LivingP
     return capture(selected);
 }
 
+PartnerActionObservation EvaluateSelectedPartnerSpawn(const MarriageCommitTarget& layout,PartnerSpawnControl original,
+    void* component,std::uint16_t playable,DWORD key,std::uint16_t character) {
+    PartnerActionObservation denied{};denied.result=layout.runtime.unavailableResult;unsigned count=0;std::uint16_t actual=0xffff;
+    const auto record=marriedRecord(layout,component,playable,key,count);
+    if(!original || !record || !copyReadable(&actual,static_cast<const BYTE*>(record)+0xc,sizeof(actual)) || actual!=character)return denied;
+    RuntimeActionContext call{&layout,original,component,playable};
+    return ReconcilePartnerAction(layout,component,playable,key,true,invokeSinglePartner,&call);
+}
+
 void* EvaluatePartnerSpawnAction(const MarriageCommitTarget& layout,PartnerSpawnControl original,
     void* component,void* result,bool spawn,std::uint16_t playable,bool active) {
     if(!original)return result;
@@ -705,6 +729,7 @@ bool InstallMarriageCommitHook(HMODULE module, PluginLog writeLog, void* livingE
         else sprintf_s(message, "PARTNER RESTORE UNAVAILABLE: %s; native single-partner restore retained.", error ? error : "unknown layout");
         logger(message);
     }
+    InstallPartnerSummon(module,installedTarget,logger);
     InstallBeautyPicker(module,installedTarget,logger);
     return true;
 }
