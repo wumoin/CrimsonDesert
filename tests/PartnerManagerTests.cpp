@@ -11,7 +11,8 @@ std::vector<BeautyPartnerOption> testPartners{{635,50,0x1001},{644,50,0x1002}};
 DWORD savedPreference=0;
 bool contextAvailable=true,saveAllowed=true;
 unsigned assignments=0;
-bool summonReady=true,summonBusy=false;unsigned summonRequests=0;DWORD summonedKey=0;
+bool summonReady=true,recallReady=true,summonBusy=false;unsigned summonRequests=0;DWORD summonedKey=0;
+WORD requestedAction=summonId;bool requestedSpawn=true;
 SHORT hotkeyStates[256]{};
 SHORT WINAPI readHotkeyState(int key){assert(key>=0 && key<256);return hotkeyStates[key];}
 constexpr char configComment[]=u8"; 中文注释：保留原配置与编码\r\n";
@@ -224,20 +225,27 @@ void changeManagerLanguage(HWND window,UiLanguage language);
 void CALLBACK driveSummonDialog(HWND window,UINT,UINT_PTR timer,DWORD) {
     KillTimer(window,timer);
     auto* data=reinterpret_cast<ManagerDialog*>(GetWindowLongPtrW(window,DWLP_USER));assert(data);
-    assert(IsWindowEnabled(GetDlgItem(window,summonId)));
+    assert(IsWindowEnabled(GetDlgItem(window,summonId)) && IsWindowEnabled(GetDlgItem(window,recallId)));
+    RECT summon{},recall{},name{};assert(GetWindowRect(GetDlgItem(window,summonId),&summon) && GetWindowRect(GetDlgItem(window,recallId),&recall) && GetWindowRect(GetDlgItem(window,originalNameId),&name));
+    assert(summon.top==recall.top && summon.right<=recall.left && summon.bottom<=name.top);
     const auto requests=summonRequests;
-    summonReady=false;updateSummonState(window,*data);assert(!IsWindowEnabled(GetDlgItem(window,summonId)));
-    SendMessageW(window,WM_COMMAND,MAKEWPARAM(summonId,BN_CLICKED),0);assert(IsWindow(window) && summonRequests==requests);
-    summonReady=true;summonBusy=true;updateSummonState(window,*data);assert(!IsWindowEnabled(GetDlgItem(window,summonId)));
-    SendMessageW(window,WM_COMMAND,MAKEWPARAM(summonId,BN_CLICKED),0);assert(IsWindow(window) && summonRequests==requests);
+    recallReady=false;updatePartnerActionState(window,*data);
+    assert(IsWindowEnabled(GetDlgItem(window,summonId)) && !IsWindowEnabled(GetDlgItem(window,recallId)));
+    if(requestedAction==recallId){SendMessageW(window,WM_COMMAND,MAKEWPARAM(recallId,BN_CLICKED),0);assert(IsWindow(window) && summonRequests==requests);}
+    recallReady=true;
+    summonReady=false;updatePartnerActionState(window,*data);assert(!IsWindowEnabled(GetDlgItem(window,summonId)) && !IsWindowEnabled(GetDlgItem(window,recallId)));
+    SendMessageW(window,WM_COMMAND,MAKEWPARAM(requestedAction,BN_CLICKED),0);assert(IsWindow(window) && summonRequests==requests);
+    summonReady=true;summonBusy=true;updatePartnerActionState(window,*data);assert(!IsWindowEnabled(GetDlgItem(window,summonId)) && !IsWindowEnabled(GetDlgItem(window,recallId)));
+    SendMessageW(window,WM_COMMAND,MAKEWPARAM(requestedAction,BN_CLICKED),0);assert(IsWindow(window) && summonRequests==requests);
     summonBusy=false;
     SendDlgItemMessageW(window,listId,LB_SETCURSEL,1,0);SendMessageW(window,WM_COMMAND,MAKEWPARAM(listId,LBN_SELCHANGE),0);
-    assert(data->selected==1 && IsWindowEnabled(GetDlgItem(window,summonId)));
+    assert(data->selected==1 && IsWindowEnabled(GetDlgItem(window,summonId)) && IsWindowEnabled(GetDlgItem(window,recallId)));
     for(const auto language:{UiLanguage::English,UiLanguage::Chinese}) {
         changeManagerLanguage(window,language);
         wchar_t text[128]{};GetDlgItemTextW(window,summonId,text,128);assert(!wcscmp(text,UiString(UiText::SummonSelected)));
+        GetDlgItemTextW(window,recallId,text,128);assert(!wcscmp(text,UiString(UiText::RecallSelected)));
     }
-    SendMessageW(window,WM_COMMAND,MAKEWPARAM(summonId,BN_CLICKED),0);
+    SendMessageW(window,WM_COMMAND,MAKEWPARAM(requestedAction,BN_CLICKED),0);
     assert(summonRequests==requests); // 对话框回调只结束模态窗口，不能提前发请求。
 }
 INT_PTR CALLBACK summonDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
@@ -245,13 +253,17 @@ INT_PTR CALLBACK summonDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     if(message==WM_INITDIALOG)SetTimer(window,8,30,driveSummonDialog);return result;
 }
 void testManagerSummon() {
-    ManagerDialog data{testContext,testPartners,0,0,false};const auto layout=dialogLayout();
-    const auto preference=savedPreference;const auto requests=summonRequests,assigns=assignments;
-    assert(DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),nullptr,summonDialog,reinterpret_cast<LPARAM>(&data))==summonId);
-    assert(!managerWindow && summonRequests==requests && dispatchManagerSummon(data));
-    assert(summonRequests==requests+1 && summonedKey==testPartners[1].key && savedPreference==preference && assignments==assigns);
-    data.stale=true;assert(!dispatchManagerSummon(data));data.stale=false;data.selected=-1;assert(!dispatchManagerSummon(data));
-    assert(summonRequests==requests+1);puts("PASS: localized selected-summon button, unavailable/busy/stale/empty guards, request only after modal closes, no preference/name writes.");
+    for(const WORD command:{summonId,recallId}) {
+        requestedAction=command;const bool spawn=command==summonId;
+        ManagerDialog data{testContext,testPartners,0,0,false};const auto layout=dialogLayout();
+        const auto preference=savedPreference;const auto requests=summonRequests,assigns=assignments;
+        assert(DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),nullptr,summonDialog,reinterpret_cast<LPARAM>(&data))==command);
+        assert(!managerWindow && summonRequests==requests && dispatchManagerPartnerAction(data,spawn));
+        assert(summonRequests==requests+1 && summonedKey==testPartners[1].key && requestedSpawn==spawn && savedPreference==preference && assignments==assigns);
+        data.stale=true;assert(!dispatchManagerPartnerAction(data,spawn));data.stale=false;data.selected=-1;assert(!dispatchManagerPartnerAction(data,spawn));
+        assert(summonRequests==requests+1);
+    }
+    puts("PASS: localized summon/recall buttons and layout, unavailable/busy/stale/empty guards, correct action only after modal closes, no preference/name writes.");
 }
 std::wstring controlText(HWND window,int id) {
     wchar_t buffer[512]{};
@@ -391,8 +403,9 @@ bool ReadBeautyPartners(void*,std::uint16_t,std::vector<BeautyPartnerOption>& pa
 std::wstring ReadPartnerOriginalName(const BeautyPartnerOption&,unsigned){return L"原生名字";}
 bool FindPartnerNameTarget(HMODULE,const MarriageCommitTarget&,PartnerNameTarget&,const char**){return false;}
 bool IsPartnerSummonReady(){return summonReady;}
+bool IsPartnerRecallReady(){return summonReady && recallReady;}
 bool IsPartnerSummonBusy(){return summonBusy;}
-bool RequestPartnerSummon(const PartnerUiContext&,const BeautyPartnerOption& partner){++summonRequests;summonedKey=partner.key;return true;}
+bool RequestPartnerSummon(const PartnerUiContext&,const BeautyPartnerOption& partner,bool spawn){++summonRequests;summonedKey=partner.key;requestedSpawn=spawn;return true;}
 
 int wmain(int argc,wchar_t** argv) {
     wchar_t temp[MAX_PATH]{};assert(GetTempPathW(MAX_PATH,temp));

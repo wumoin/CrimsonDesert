@@ -99,8 +99,8 @@ bool IsPartnerSpawnHookReady();
 // 按真实关系核对每位伴侣的实例；一位失败不会跳过其他对象。
 void* EvaluatePartnerSpawnAction(const MarriageCommitTarget& layout, PartnerSpawnControl original,
     void* component, void* result, bool spawn, std::uint16_t playable, bool enabled);
-PartnerActionObservation EvaluateSelectedPartnerSpawn(const MarriageCommitTarget& layout,PartnerSpawnControl original,
-    void* component,std::uint16_t playable,DWORD key,std::uint16_t character);
+PartnerActionObservation EvaluateSelectedPartnerAction(const MarriageCommitTarget& layout,PartnerSpawnControl original,
+    void* component,std::uint16_t playable,DWORD key,std::uint16_t character,bool spawn);
 // preferredPartnerKey=0 时跟随本进程中本次写入目标；非 0 仅选择已属本角色的已婚记录。
 void SetMarriageCommitOverride(bool enabled, DWORD preferredPartnerKey = 0, bool spawnAll = false,
     bool relationshipGuards = false);

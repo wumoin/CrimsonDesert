@@ -34,7 +34,7 @@ int wmain(int argc,wchar_t** argv) {
     bool ok=FindConditionTarget(module,living,error,ConditionKind::LivingTogether) &&
         FindMarriageCommitTarget(module,marriage,error,living.evaluator) && FindPartnerRuntimeTarget(module,marriage,error) &&
         FindBeautyPartnerLookup(module,marriage) && FindBeautyUiTarget(module,marriage,ui) && FindPartnerNameTarget(module,marriage,names,&error) &&
-        FindPartnerSummonTarget(module,marriage,summon,error);
+        FindPartnerSummonTarget(module,marriage,summon,error) && FindPartnerRecallTarget(module,marriage,summon,error);
     printf("Name target: %s (%s)\n",ok?"PASS":"FAIL",error?error:"no layout error");
     if(ok) {
         printf("UI world RVA=%llx offsets=%x/%x/%x player=%x; records=%x/%x/%x/%x keys=%x/%x/%x/%x actorId=%x contents=%x playable=%x\n",
@@ -47,6 +47,12 @@ int wmain(int argc,wchar_t** argv) {
             reinterpret_cast<const BYTE*>(names.assign)-image,reinterpret_cast<const BYTE*>(names.clientWorld)-image,
             names.managerOffset,names.registryOffset,names.bucketCountOffset,names.bucketsOffset,names.entriesOffset,names.statusOffset,names.nameOffset);
         printf("Summon send RVA=%lx dispatch RVA=%lx playable-key offset=%x\n",summon.sendRva,summon.dispatchRva,summon.playableKeyOffset);
+        printf("Recall leave RVA=%lx party offsets=%x/%x/%x/%x\n",summon.leavePartyRva,summon.partyComponentOffset,summon.partyActiveOffset,summon.partyGroupOffset,summon.partyLeaderOffset);
+        auto* leave=reinterpret_cast<BYTE*>(summon.leaveParty);const auto leaveByte=*leave;*leave=0xcc;
+        PartnerSummonTarget changedRecall{};
+        if(FindPartnerRecallTarget(module,marriage,changedRecall,error)){puts("Changed party leave ABI was incorrectly accepted.");ok=false;}
+        *leave=leaveByte;
+        if(!FindPartnerRecallTarget(module,marriage,changedRecall,error)){puts("Restored party leave ABI was incorrectly rejected.");ok=false;}
         // 发包字段宽度发生变化时关闭按钮，不在未知协议上发送选中请求。
         auto* sender=reinterpret_cast<BYTE*>(summon.send);constexpr BYTE keyWidth[]={0x41,0xb8,4,0,0,0};
         const auto width=std::search(sender,sender+512,std::begin(keyWidth),std::end(keyWidth));

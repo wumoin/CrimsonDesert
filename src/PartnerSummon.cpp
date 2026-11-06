@@ -20,13 +20,14 @@ struct Request {
     std::uintptr_t clientActor=0,clientComponent=0;
     std::uint16_t playable=0xffff,character=0xffff;
     BYTE token=0;
-    bool queued=false,processing=false;
+    bool queued=false,processing=false,spawn=true;
 };
 Request pending;
 ULONGLONG nextId=0,usedTokens[128]{};
 unsigned nextToken=0;
 struct Selection {Request request;void* owner=nullptr;bool consumed=false;};
 thread_local Selection* selection=nullptr;
+thread_local bool detachingParty=false;
 bool read(void* out,const void* at,std::size_t size) {
     SIZE_T got=0;return at && ReadProcessMemory(GetCurrentProcess(),at,out,size,&got) && got==size;
 }
@@ -38,14 +39,14 @@ void expire(ULONGLONG now) {
 }
 void logRequest(const char* action,const Request& request) {
     if(!logger)return;
-    char line[256];sprintf_s(line,"PARTNER MANAGER SUMMON %s: id=%llu owner=0x%08lx playable=%u key=%lu character=%u token=%u",
-        action,request.id,request.ownerId,static_cast<unsigned>(request.playable),request.key,static_cast<unsigned>(request.character),static_cast<unsigned>(request.token));logger(line);
+    char line[256];sprintf_s(line,"PARTNER MANAGER SUMMON %s: id=%llu owner=0x%08lx playable=%u key=%lu character=%u spawn=%d token=%u",
+        action,request.id,request.ownerId,static_cast<unsigned>(request.playable),request.key,static_cast<unsigned>(request.character),request.spawn,static_cast<unsigned>(request.token));logger(line);
 }
 void __fastcall dispatch(void* self,void* context,const BYTE* spawn,const DWORD* playableKey) {
     BYTE value=0;
     if(!read(&value,spawn,sizeof(value)) || value<0x80){originalDispatch(self,context,spawn,playableKey);return;}
     // 原版请求只序列化 1 字节动作和 4 字节角色键。已验证的原生读写器按原字节复制；
-    // 保留高位动作字节用于关联本插件的短期选择，进入原版业务函数前恢复为规范的 true。
+    // 保留高位动作字节用于关联本插件的短期选择，进入原版业务函数前恢复为规范的 0/1。
     // 因此普通 0/1 请求不会误用窗口选择，迟到或未知令牌也不会回退为另一位伴侣。
     Request request;void* owner=nullptr;DWORD ownerId=0,characterKey=0;bool accepted=false;
     if(read(&owner,context,sizeof(owner)) && field(owner,layout.runtime.actorIdOffset,ownerId) && read(&characterKey,playableKey,sizeof(characterKey))) {
@@ -64,7 +65,7 @@ void __fastcall dispatch(void* self,void* context,const BYTE* spawn,const DWORD*
     }
     Selection active{request,owner,false};
     struct Scope {Selection* previous;explicit Scope(Selection& value):previous(selection){selection=&value;}~Scope(){selection=previous;}} scope(active);
-    const BYTE canonicalSpawn=1;
+    const BYTE canonicalSpawn=request.spawn?1:0;
     try {originalDispatch(self,context,&canonicalSpawn,playableKey);}
     catch(...) {if(logger)logger("PARTNER MANAGER SUMMON BLOCKED: native dispatch interrupted; no retry.");}
     if(!active.consumed)logRequest("NOT EXECUTED",request);
@@ -77,6 +78,12 @@ bool InstallPartnerSummon(HMODULE module,const MarriageCommitTarget& marriage,Pl
     if(!FindPartnerSummonTarget(module,marriage,native,error)) {
         if(logger){char line[240];sprintf_s(line,"PARTNER MANAGER SUMMON UNAVAILABLE: %s.",error?error:"native request path not verified");logger(line);}return false;
     }
+    if(!FindPartnerRecallTarget(module,marriage,native,error)) {
+        if(logger){char line[240];sprintf_s(line,"PARTNER MANAGER RECALL UNAVAILABLE: %s.",error?error:"native party leave not verified");logger(line);}
+    } else if(logger) {
+        char line[224];sprintf_s(line,"PARTNER MANAGER RECALL READY: leaveRVA=0x%08lx party=0x%x active=0x%x group=0x%x leader=0x%x; native follower detach before selected recall.",
+            native.leavePartyRva,native.partyComponentOffset,native.partyActiveOffset,native.partyGroupOffset,native.partyLeaderOffset);logger(line);
+    }
     auto status=MH_CreateHook(reinterpret_cast<void*>(native.dispatch),reinterpret_cast<void*>(&dispatch),reinterpret_cast<void**>(&originalDispatch));
     if(status==MH_OK){status=MH_EnableHook(reinterpret_cast<void*>(native.dispatch));if(status!=MH_OK)MH_RemoveHook(reinterpret_cast<void*>(native.dispatch));}
     ready=status==MH_OK;
@@ -88,9 +95,10 @@ void SetPartnerSummonEnabled(bool value) {
     if(!value){Lock lock;pending.queued=false;pending.processing=false;}
 }
 bool IsPartnerSummonReady(){return ready && enabled;}
+bool IsPartnerRecallReady(){return IsPartnerSummonReady() && native.leaveParty && native.partyVtable;}
 bool IsPartnerSummonBusy(){Lock lock;expire(GetTickCount64());return pending.queued || pending.processing;}
-bool RequestPartnerSummon(const PartnerUiContext& context,const BeautyPartnerOption& partner) {
-    if(!IsPartnerSummonReady() || !partner.key || partner.key==MAXDWORD || partner.character==0xffff)return false;
+bool RequestPartnerSummon(const PartnerUiContext& context,const BeautyPartnerOption& partner,bool spawn) {
+    if(!(spawn?IsPartnerSummonReady():IsPartnerRecallReady()) || !partner.key || partner.key==MAXDWORD || partner.character==0xffff)return false;
     PartnerUiContext current{};std::vector<BeautyPartnerOption> partners;
     if(!ReadPartnerUiContext(current) || current.actor!=context.actor || current.component!=context.component || current.playable!=context.playable ||
         !ReadBeautyPartners(current.component,current.playable,partners) || std::none_of(partners.begin(),partners.end(),[&](const auto& item){return item.key==partner.key && item.character==partner.character;}))return false;
@@ -115,7 +123,7 @@ bool RequestPartnerSummon(const PartnerUiContext& context,const BeautyPartnerOpt
         usedTokens[token]=now?now:1;nextToken=(static_cast<unsigned>(token)+1)%128;
         request.id=++nextId;request.created=now;request.ownerId=ownerId;request.actorId=actorId;request.playableKey=playableKey;
         request.clientActor=reinterpret_cast<std::uintptr_t>(current.actor);request.clientComponent=reinterpret_cast<std::uintptr_t>(current.component);
-        request.key=partner.key;request.playable=current.playable;request.character=partner.character;
+        request.key=partner.key;request.playable=current.playable;request.character=partner.character;request.spawn=spawn;
         request.token=static_cast<BYTE>(0x80+token);request.queued=true;pending=request;
     }
     logRequest("REQUEST",request);
@@ -125,13 +133,67 @@ bool RequestPartnerSummon(const PartnerUiContext& context,const BeautyPartnerOpt
     return true;
 }
 bool HasSelectedPartnerSummon(){return selection!=nullptr;}
-bool ReadSelectedPartnerSummon(void* component,std::uint16_t playable,DWORD& key,std::uint16_t& character) {
-    key=0;character=0xffff;void* owner=nullptr;
+bool ReadSelectedPartnerSummon(void* component,std::uint16_t playable,DWORD& key,std::uint16_t& character,bool* spawn) {
+    key=0;character=0xffff;if(spawn)*spawn=false;void* owner=nullptr;
     if(!selection || !enabled || selection->request.playable!=playable || !field(component,8,owner) || owner!=selection->owner)return false;
-    key=selection->request.key;character=selection->request.character;return true;
+    key=selection->request.key;character=selection->request.character;if(spawn)*spawn=selection->request.spawn;return true;
 }
 void ReportSelectedPartnerSummon(const PartnerActionObservation& observation) {
     if(!selection)return;selection->consumed=true;
-    if(logger){char line[272];sprintf_s(line,"PARTNER MANAGER SUMMON RESULT: id=%llu playable=%u key=%lu result=0x%08lx before=%u after=%u verified=%d pending=%d; original scene checks and native acknowledgements preserved.",
-        selection->request.id,static_cast<unsigned>(selection->request.playable),selection->request.key,observation.result,observation.before,observation.after,observation.verified,observation.pending);logger(line);}
+    if(logger){char line[288];sprintf_s(line,"PARTNER MANAGER SUMMON RESULT: id=%llu playable=%u key=%lu spawn=%d result=0x%08lx before=%u after=%u verified=%d pending=%d; original scene checks and native acknowledgements preserved.",
+        selection->request.id,static_cast<unsigned>(selection->request.playable),selection->request.key,selection->request.spawn,observation.result,observation.before,observation.after,observation.verified,observation.pending);logger(line);}
+}
+
+DWORD PrepareSelectedPartnerRecall(void* component,std::uint16_t playable,DWORD key,bool& alreadyRecalled) {
+    alreadyRecalled=false;const auto denied=layout.runtime.unavailableResult;
+    DWORD selected=0;std::uint16_t character=0xffff;bool spawn=true;
+    if(detachingParty || !IsPartnerRecallReady() || !ReadSelectedPartnerSummon(component,playable,selected,character,&spawn) || spawn || selected!=key)return denied;
+    std::vector<BeautyPartnerOption> partners;
+    if(!ReadBeautyPartners(component,playable,partners))return denied;
+    const auto record=std::find_if(partners.begin(),partners.end(),[&](const auto& item){return item.key==key && item.character==character;});
+    if(record==partners.end())return denied;
+    if(!record->actorId){alreadyRecalled=true;return 0;}
+    const auto actorId=record->actorId;
+    std::vector<PartnerActor> actors;if(!CollectPartnerActors(layout,component,playable,actors))return denied;
+    const auto actor=std::find_if(actors.begin(),actors.end(),[&](const auto& item){return item.key==key && item.actorId==actorId;});
+    if(actor==actors.end())return denied;
+    const auto address=reinterpret_cast<void*>(actor->address);
+    void* components=nullptr;void* party=nullptr;void* partyOwner=nullptr;void** vtable=nullptr;BYTE active=0;
+    if(!field(address,layout.npcKeyOffsets[0],components) || !field(components,native.partyComponentOffset,party) ||
+        !field(party,8,partyOwner) || partyOwner!=address || !field(party,0,vtable) || vtable!=native.partyVtable ||
+        !field(party,native.partyActiveOffset,active))return denied;
+    if(!active)return 0;
+    void* group=nullptr;DWORD leader=0,ownerId=0;
+    if(!field(party,native.partyGroupOffset,group) || !field(group,native.partyLeaderOffset,leader) ||
+        !field(selection->owner,layout.runtime.actorIdOffset,ownerId))return denied;
+    if(!leader)return 0;
+    // 只允许将当前玩家的已婚 NPC 作为成员移出；不对领队或其他玩家的队伍调用退队。
+    if(leader!=ownerId || leader==actorId)return denied;
+    DWORD result=denied;
+    {
+        struct Detaching {Detaching(){detachingParty=true;}~Detaching(){detachingParty=false;}} guard;
+        // 与原版同行创建前退出旧队伍的调用保持相同参数，交由游戏维护双方列表和通知。
+        native.leaveParty(party,&result,false,false);
+    }
+    if(result)return result;
+    partners.clear();if(!ReadBeautyPartners(component,playable,partners))return denied;
+    const auto current=std::find_if(partners.begin(),partners.end(),[&](const auto& item){return item.key==key && item.character==character;});
+    if(current==partners.end())return denied;
+    if(!current->actorId) {
+        alreadyRecalled=true;
+        if(logger){char line[176];sprintf_s(line,"PARTNER MANAGER RECALL DETACH: key=%lu actor=0x%08lx; native leave also cleared the instance binding.",key,actorId);logger(line);}
+        return 0;
+    }
+    if(current->actorId!=actorId || !CollectPartnerActors(layout,component,playable,actors) ||
+        std::none_of(actors.begin(),actors.end(),[&](const auto& item){return item.key==key && item.actorId==actorId && item.address==reinterpret_cast<std::uintptr_t>(address);}))return denied;
+    void* currentParty=nullptr;
+    if(!field(address,layout.npcKeyOffsets[0],components) || !field(components,native.partyComponentOffset,currentParty) || currentParty!=party ||
+        !field(party,native.partyActiveOffset,active))return denied;
+    bool blocked=false;
+    if(active) {
+        if(!field(party,native.partyGroupOffset,group) || !field(group,native.partyLeaderOffset,leader))return denied;
+        blocked=leader!=0;
+    }
+    if(logger){char line[192];sprintf_s(line,"PARTNER MANAGER RECALL DETACH: key=%lu actor=0x%08lx result=0x%08lx blocked=%d; native member leave returned.",key,actorId,result,blocked);logger(line);}
+    return blocked?denied:0;
 }

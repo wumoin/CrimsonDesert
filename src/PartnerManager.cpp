@@ -15,7 +15,7 @@
 namespace {
 constexpr WORD listId=100, preferenceId=101, automaticId=102, nameId=103;
 constexpr WORD saveNameId=104, resetNameId=105, statusId=106, preferenceTextId=107, originalNameId=108;
-constexpr WORD summonId=109;
+constexpr WORD summonId=109,recallId=110;
 constexpr unsigned maxNameLength=30;
 using NameId=std::tuple<std::uint16_t,DWORD,std::uint16_t>;
 std::map<NameId,std::wstring> names;
@@ -249,8 +249,8 @@ void control(std::vector<BYTE>& out,DWORD style,short x,short y,short w,short h,
 }
 std::vector<BYTE> dialogLayout() {
     std::vector<BYTE> layout;
-    dword(layout,WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT);dword(layout,0);word(layout,15);
-    word(layout,0);word(layout,0);word(layout,360);word(layout,339);word(layout,0);word(layout,0);text(layout,managerTitle().c_str());
+    dword(layout,WS_POPUP|WS_CAPTION|WS_SYSMENU|DS_MODALFRAME|DS_SETFONT);dword(layout,0);word(layout,16);
+    word(layout,0);word(layout,0);word(layout,360);word(layout,371);word(layout,0);word(layout,0);text(layout,managerTitle().c_str());
     word(layout,10);text(layout,L"Microsoft YaHei UI");
     control(layout,0,152,10,90,14,UiLanguageLabelId,0x82,UiString(UiText::LanguageLabel));
     control(layout,WS_TABSTOP|WS_VSCROLL|CBS_DROPDOWNLIST,244,7,104,80,UiLanguageComboId,0x85,L"");
@@ -259,14 +259,15 @@ std::vector<BYTE> dialogLayout() {
     control(layout,0,12,166,336,24,preferenceTextId,0x82,L"");
     control(layout,WS_TABSTOP,12,193,104,22,preferenceId,0x80,UiString(UiText::SetPreferred));
     control(layout,WS_TABSTOP,126,193,104,22,automaticId,0x80,UiString(UiText::Automatic));
-    control(layout,WS_TABSTOP,240,193,108,22,summonId,0x80,UiString(UiText::SummonSelected));
-    control(layout,0,12,225,336,14,originalNameId,0x82,L"");
-    control(layout,0,12,246,42,14,201,0x82,UiString(UiText::NameLabel));
-    control(layout,WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL,56,243,292,20,nameId,0x81,L"");
-    control(layout,WS_TABSTOP|BS_DEFPUSHBUTTON,12,270,104,22,saveNameId,0x80,UiString(UiText::SaveName));
-    control(layout,WS_TABSTOP,126,270,104,22,resetNameId,0x80,UiString(UiText::ResetName));
-    control(layout,0,12,301,251,25,statusId,0x82,UiString(UiText::StatusDefault));
-    control(layout,WS_TABSTOP,278,304,70,22,IDCANCEL,0x80,UiString(UiText::Close));
+    control(layout,WS_TABSTOP,12,225,104,22,summonId,0x80,UiString(UiText::SummonSelected));
+    control(layout,WS_TABSTOP,126,225,104,22,recallId,0x80,UiString(UiText::RecallSelected));
+    control(layout,0,12,257,336,14,originalNameId,0x82,L"");
+    control(layout,0,12,278,42,14,201,0x82,UiString(UiText::NameLabel));
+    control(layout,WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL,56,275,292,20,nameId,0x81,L"");
+    control(layout,WS_TABSTOP|BS_DEFPUSHBUTTON,12,302,104,22,saveNameId,0x80,UiString(UiText::SaveName));
+    control(layout,WS_TABSTOP,126,302,104,22,resetNameId,0x80,UiString(UiText::ResetName));
+    control(layout,0,12,333,251,25,statusId,0x82,UiString(UiText::StatusDefault));
+    control(layout,WS_TABSTOP,278,336,70,22,IDCANCEL,0x80,UiString(UiText::Close));
     return layout;
 }
 struct ManagerDialog {
@@ -311,15 +312,17 @@ void refreshManagerLanguage(HWND window,ManagerDialog& data) {
     struct Label{WORD id;UiText text;};
     for(const auto& label:{Label{UiLanguageLabelId,UiText::LanguageLabel},{200,UiText::ManagerHelp},
         {preferenceId,UiText::SetPreferred},{automaticId,UiText::Automatic},{201,UiText::NameLabel},
-        {saveNameId,UiText::SaveName},{resetNameId,UiText::ResetName},{summonId,UiText::SummonSelected},{IDCANCEL,UiText::Close}})
+        {saveNameId,UiText::SaveName},{resetNameId,UiText::ResetName},{summonId,UiText::SummonSelected},{recallId,UiText::RecallSelected},{IDCANCEL,UiText::Close}})
         SetDlgItemTextW(window,label.id,UiString(label.text));
     RefreshUiLanguageSelector(window);fillList(window,data);updateOriginalName(window,data);
     SetDlgItemTextW(window,statusId,UiString(data.status));
     // 不调用 updateSelection：语言切换不重填名字框，保留未保存输入和编辑选区。
 }
-void updateSummonState(HWND window,const ManagerDialog& data) {
+void updatePartnerActionState(HWND window,const ManagerDialog& data) {
     const bool valid=data.selected>=0 && !data.stale && InterlockedCompareExchange(&enabled,0,0);
-    EnableWindow(GetDlgItem(window,summonId),valid && IsPartnerSummonReady() && !IsPartnerSummonBusy());
+    const bool available=valid && !IsPartnerSummonBusy();
+    EnableWindow(GetDlgItem(window,summonId),available && IsPartnerSummonReady());
+    EnableWindow(GetDlgItem(window,recallId),available && IsPartnerRecallReady());
 }
 void updateSelection(HWND window,ManagerDialog& data) {
     const auto selected=SendDlgItemMessageW(window,listId,LB_GETCURSEL,0,0);
@@ -328,7 +331,7 @@ void updateSelection(HWND window,ManagerDialog& data) {
     EnableWindow(GetDlgItem(window,preferenceId),valid && InterlockedCompareExchange(&preferenceEnabled,0,0));
     EnableWindow(GetDlgItem(window,automaticId),!data.stale && InterlockedCompareExchange(&preferenceEnabled,0,0));
     for(const auto id:{nameId,saveNameId,resetNameId})EnableWindow(GetDlgItem(window,id),valid && nativeNames.assign);
-    updateSummonState(window,data);
+    updatePartnerActionState(window,data);
     updateOriginalName(window,data);
     if(data.selected<0){SetDlgItemTextW(window,nameId,L"");return;}
     const auto& partner=data.partners[static_cast<std::size_t>(data.selected)];
@@ -363,7 +366,7 @@ INT_PTR CALLBACK managerDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     if(!data)return FALSE;
     if(message==dispatchMessage && wp==2){SetWindowTextW(window,managerTitle().c_str());return TRUE;}
     if(message==UiLanguageChangedMessage()){refreshManagerLanguage(window,*data);return TRUE;}
-    if(message==WM_TIMER && wp==1){if(verifyContext(window,*data))updateSummonState(window,*data);return TRUE;}
+    if(message==WM_TIMER && wp==1){if(verifyContext(window,*data))updatePartnerActionState(window,*data);return TRUE;}
     if(message!=WM_COMMAND)return FALSE;
     const auto id=LOWORD(wp);
     if(IsUiLanguageCommand(wp)) {
@@ -374,15 +377,15 @@ INT_PTR CALLBACK managerDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     if(id==IDCANCEL){EndDialog(window,IDCANCEL);return TRUE;}
     if(id==listId && HIWORD(wp)==LBN_SELCHANGE){updateSelection(window,*data);return TRUE;}
     // Enter 只在“保存名字”按钮或名字框上保存；列表中的 Enter 不会意外改名。
-    if(id!=preferenceId && id!=automaticId && id!=saveNameId && id!=resetNameId && id!=summonId)return FALSE;
+    if(id!=preferenceId && id!=automaticId && id!=saveNameId && id!=resetNameId && id!=summonId && id!=recallId)return FALSE;
     if(id==saveNameId && HIWORD(wp)==0 &&
         (GetFocus()==GetDlgItem(window,listId) || GetFocus()==GetDlgItem(window,UiLanguageComboId)))return TRUE;
     if(!verifyContext(window,*data))return TRUE;
-    if(id==summonId) {
+    if(id==summonId || id==recallId) {
         if(data->selected<0)return TRUE;
-        if(!IsPartnerSummonReady()){setStatus(window,UiText::SummonUnavailable);return TRUE;}
+        if(!(id==summonId?IsPartnerSummonReady():IsPartnerRecallReady())){setStatus(window,UiText::SummonUnavailable);return TRUE;}
         if(IsPartnerSummonBusy()){setStatus(window,UiText::SummonBusy);return TRUE;}
-        EndDialog(window,summonId);return TRUE;
+        EndDialog(window,id);return TRUE;
     }
     if(id==preferenceId || id==automaticId) {
         if(!InterlockedCompareExchange(&preferenceEnabled,0,0)){setStatus(window,UiText::PreferenceNeedsCommit);return TRUE;}
@@ -405,10 +408,10 @@ INT_PTR CALLBACK managerDialog(HWND window,UINT message,WPARAM wp,LPARAM lp) {
     applyNames();fillList(window,*data);updateSelection(window,*data);
     setStatus(window,id==resetNameId?UiText::NameReset:UiText::NameSaved);return TRUE;
 }
-bool dispatchManagerSummon(const ManagerDialog& data) {
+bool dispatchManagerPartnerAction(const ManagerDialog& data,bool spawn) {
     return !data.stale && InterlockedCompareExchange(&enabled,0,0) && data.selected>=0 &&
-        static_cast<std::size_t>(data.selected)<data.partners.size() && IsPartnerSummonReady() && !IsPartnerSummonBusy() &&
-        RequestPartnerSummon(data.context,data.partners[static_cast<std::size_t>(data.selected)]);
+        static_cast<std::size_t>(data.selected)<data.partners.size() && (spawn?IsPartnerSummonReady():IsPartnerRecallReady()) && !IsPartnerSummonBusy() &&
+        RequestPartnerSummon(data.context,data.partners[static_cast<std::size_t>(data.selected)],spawn);
 }
 void openManager() {
     if(managerWindow){SetForegroundWindow(managerWindow);return;}
@@ -430,8 +433,8 @@ void openManager() {
     const auto result=DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),
         gameWindow,managerDialog,reinterpret_cast<LPARAM>(&data));
     if(logger)logger(result==-1?"PARTNER MANAGER FAILED: dialog creation failed.":"PARTNER MANAGER CLOSED.");
-    if(result==summonId && !dispatchManagerSummon(data))
-        MessageBoxW(gameWindow,UiString(UiText::SummonFailed),managerTitle().c_str(),MB_OK|MB_ICONINFORMATION);
+    if((result==summonId || result==recallId) && !dispatchManagerPartnerAction(data,result==summonId))
+        MessageBoxW(gameWindow,UiString(result==summonId?UiText::SummonFailed:UiText::RecallFailed),managerTitle().c_str(),MB_OK|MB_ICONINFORMATION);
 }
 bool ownedWindow(HWND window) {
     DWORD pid=0;

@@ -11,7 +11,7 @@ constexpr Translation translations[]={
     {L"语言 / &Language",L"语言 / &Language"},
     {L"简体中文",L"简体中文"},{L"English",L"English"},
     {L"伴侣管理",L"Partner Manager"},{L"伴侣美容",L"Partner Appearance"},
-    {L"已婚对象（选择后管理名字、优先伴侣或召唤）",L"Select a married partner to manage or summon."},
+    {L"已婚对象（选择后管理、召唤或收回）",L"Select a married partner to manage, summon or recall."},
     {L"选择要美容的伴侣：",L"Choose a partner to customize:"},
     {L"设为优先伴侣(&P)",L"Set &preferred"},{L"恢复自动选择(&A)",L"&Automatic"},
     {L"名字(&N)：",L"&Name:"},{L"保存名字(&S)",L"&Save name"},{L"重置名字(&R)",L"&Reset name"},
@@ -19,7 +19,7 @@ constexpr Translation translations[]={
     {L"当前优先伴侣：自动选择",L"Preferred partner: Automatic"},
     {L"当前优先伴侣编号：",L"Preferred partner ID: "},{L"  · 优先",L"  · Preferred"},
     {L"原名：",L"Original name: "},{L"暂无已婚对象，请读档后重新打开。",L"No married partners. Load a save and reopen this window."},
-    {L"修改会立即保存；召唤会关闭此窗口。",L"Changes are saved immediately. Summoning closes this window."},
+    {L"修改会立即保存；召唤和收回会关闭此窗口。",L"Changes are saved immediately. Summoning or recalling closes this window."},
     {L"名字接口不兼容，改名功能暂不可用。",L"Name editing is unavailable for this game version."},
     {L"优先选择需要开启婚姻提交覆盖；改名仍可用。",L"Enable marriage override to set a preference. Names can still be edited."},
     {L"角色或婚姻关系已变化，请关闭后重新打开。",L"Character or relationships changed. Close and reopen this window."},
@@ -34,9 +34,11 @@ constexpr Translation translations[]={
     {L"语言保存失败，请检查插件 INI 是否可写。",L"Could not save the language. Check that the plugin INI is writable."},
     {L"语言设置",L"Language settings"},{L"伴侣 ",L"Partner "},
     {L"召唤所选伴侣(&U)",L"S&ummon selected"},
-    {L"当前游戏版本的召唤入口暂不可用。",L"Summoning is unavailable for this game version."},
-    {L"上一条召唤请求仍在处理中，请稍后重试。",L"A summon request is still pending. Please wait."},
-    {L"未能提交召唤请求。请确认角色与婚姻关系后重试。",L"Could not submit the summon request. Reopen the manager and try again."}
+    {L"当前游戏版本的伴侣出场入口暂不可用。",L"Partner actions are unavailable for this game version."},
+    {L"上一条伴侣出场请求仍在处理中，请稍后重试。",L"A partner action is still pending. Please wait."},
+    {L"未能提交召唤请求。请确认角色与婚姻关系后重试。",L"Could not submit the summon request. Reopen the manager and try again."},
+    {L"收回所选伴侣(&D)",L"Recall selecte&d"},
+    {L"未能提交收回请求。请确认角色与婚姻关系后重试。",L"Could not submit the recall request. Reopen the manager and try again."}
 };
 static_assert(sizeof(translations)/sizeof(translations[0])==static_cast<unsigned>(UiText::Count));
 std::atomic<UiLanguage> current{UiLanguage::Chinese};

@@ -780,6 +780,27 @@ std::vector<std::pair<DWORD, DWORD>> callsIn(const Image& image, DWORD begin, DW
     }
     return calls;
 }
+bool primaryVtable(const Image& image,const char* name,DWORD& result) {
+    const auto length=std::strlen(name)+1;std::vector<DWORD> types,cols;
+    for(const auto& span:image.spans)for(DWORD at=span.begin;at+length<=span.end;) {
+        const auto hit=static_cast<const BYTE*>(std::memchr(image.base+at,'.',span.end-at-length+1));
+        if(!hit)break;at=static_cast<DWORD>(hit-image.base)+1;
+        if(at>16 && !std::memcmp(hit,name,length))types.push_back(at-17);
+    }
+    for(const auto& span:image.spans)for(std::uint64_t at=(span.begin+3ull)&~3ull;at+sizeof(Locator)<=span.end;at+=4) {
+        Locator col{};std::memcpy(&col,image.base+at,sizeof(col));
+        if(col.signature==1 && !col.offset && !col.constructorOffset && col.self==at &&
+            std::find(types.begin(),types.end(),col.type)!=types.end())cols.push_back(static_cast<DWORD>(at));
+    }
+    unsigned matches=0;
+    for(const auto& span:image.spans)for(std::uint64_t at=(span.begin+7ull)&~7ull;at+16<=span.end;at+=8) {
+        std::uintptr_t col=0,method=0;DWORD colRva=0,methodRva=0;
+        std::memcpy(&col,image.base+at,8);std::memcpy(&method,image.base+at+8,8);
+        if(image.pointerRva(col,colRva) && std::find(cols.begin(),cols.end(),colRva)!=cols.end() &&
+            image.pointerRva(method,methodRva) && image.contains(methodRva,1,true)) {result=static_cast<DWORD>(at+8);++matches;}
+    }
+    return matches==1;
+}
 // 请求类型的主虚表由 RTTI 识别；这里只接受已验证的三参数请求处理方法布局。
 bool requestHandler(const Image& image, const char* name, NativeRequestHandler& handler,DWORD* vtable=nullptr) {
     const auto size = std::strlen(name) + 1;
@@ -1384,5 +1405,58 @@ bool FindPartnerSummonTarget(HMODULE module,const MarriageCommitTarget& marriage
         }
     }
     if(senders!=1){error="native summon client sender/playable key ABI not unique";target={};return false;}
+    error=nullptr;return true;
+}
+
+bool FindPartnerRecallTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerSummonTarget& target,const char*& error) {
+    target.leaveParty=nullptr;target.partyVtable=nullptr;target.leavePartyRva=0;
+    target.partyComponentOffset=target.partyActiveOffset=target.partyGroupOffset=target.partyLeaderOffset=0;
+    Image image;DWORD controlSize=0,createRva=0,createSize=0,partyVtable=0;
+    error="native follower-party leave path not verified";
+    if(!image.open(module) || !image.functionSize(marriage.spawnRva,controlSize) ||
+        !image.pointerRva(reinterpret_cast<std::uintptr_t>(marriage.runtime.create),createRva) || !image.functionSize(createRva,createSize) ||
+        !primaryVtable(image,".?AVServerPartyActorComponent@pa@@",partyVtable))return false;
+    unsigned blockerMatches=0,partyOffset=0,activeOffset=0,groupOffset=0,leaderOffset=0;
+    for(DWORD i=0;i+34<=controlSize;++i) {
+        const auto p=image.base+marriage.spawnRva+i;
+        if(p[0]!=0x48 || p[1]!=0x8b || p[2]!=0x42 || p[3]!=marriage.npcKeyOffsets[0] ||
+            p[4]!=0x48 || p[5]!=0x8b || p[6]!=0x80 || p[11]!=0x80 || p[12]!=0xb8 || p[17] ||
+            p[18]!=0x74 || p[20]!=0x48 || p[21]!=0x8b || p[22]!=0x80 || p[27]!=0x83 || p[28]!=0xb8 || p[33])continue;
+        std::memcpy(&partyOffset,p+7,4);std::memcpy(&activeOffset,p+13,4);std::memcpy(&groupOffset,p+23,4);std::memcpy(&leaderOffset,p+29,4);++blockerMatches;
+    }
+    if(blockerMatches!=1 || !partyOffset || partyOffset>4096 || !activeOffset || activeOffset>4096 || !groupOffset || groupOffset>4096 || !leaderOffset || leaderOffset>4096) {
+        error="native party refusal fields not unique";return false;
+    }
+    unsigned matches=0;
+    for(unsigned slot=0;slot<64;++slot) {
+        std::uintptr_t join=0;DWORD joinRva=0,joinSize=0;
+        if(!image.read(partyVtable+slot*8,join) || !image.pointerRva(join,joinRva) || !image.contains(joinRva,1,true))break;
+        if(!image.functionSize(joinRva,joinSize))continue;
+        BYTE createCall[]={0xff,0x90,0,0,0,0};const auto joinSlot=slot*8;std::memcpy(createCall+2,&joinSlot,4);
+        if(!codeHas(image,createRva,createSize,createCall,sizeof(createCall)))continue;
+        for(DWORD i=0;i+16<=joinSize;++i) {
+            const auto p=image.base+joinRva+i;unsigned componentOffset=0;
+            if(p[0]!=0x48 || p[1]!=0x8b || p[2]!=0x89 || p[7]!=0x48 || p[8]!=0x8b || p[9]!=1 ||
+                p[10]!=0x45 || p[11]!=0x33 || p[12]!=0xc9 || p[13]!=0x45 || p[14]!=0x33 || p[15]!=0xc0)continue;
+            std::memcpy(&componentOffset,p+3,4);if(componentOffset!=partyOffset)continue;
+            for(DWORD j=i+16;j+6<=joinSize && j<=i+32;++j) {
+                const auto q=image.base+joinRva+j;if(q[0]!=0xff || q[1]!=0x90)continue;
+                DWORD leaveSlot=0;std::memcpy(&leaveSlot,q+2,4);
+                std::uintptr_t leave=0;DWORD leaveRva=0,leaveSize=0;
+                if(leaveSlot%8 || leaveSlot>=64*8 || !image.read(partyVtable+leaveSlot,leave) ||
+                    !image.pointerRva(leave,leaveRva) || !image.functionSize(leaveRva,leaveSize))continue;
+                constexpr BYTE leaveHead[]={0x48,0x89,0x5c,0x24,8,0x48,0x89,0x74,0x24,0x10,0x44,0x88,0x4c,0x24,0x20};
+                BYTE ownerCompare[]={0x44,0x8b,0xb9,0,0,0,0,0x4c,0x8b,0x4f,8,0x45,0x8b,0x49,0,0x45,0x3b,0xf9};
+                std::memcpy(ownerCompare+3,&leaderOffset,4);ownerCompare[14]=static_cast<BYTE>(marriage.runtime.actorIdOffset);
+                if(leaveSize<sizeof(leaveHead) || std::memcmp(image.base+leaveRva,leaveHead,sizeof(leaveHead)) ||
+                    marriage.runtime.actorIdOffset>127 || !codeHas(image,leaveRva,leaveSize,ownerCompare,sizeof(ownerCompare)))continue;
+                if(target.leavePartyRva==leaveRva)continue;
+                ++matches;target.leaveParty=reinterpret_cast<NativePartnerPartyLeave>(leave);target.leavePartyRva=leaveRva;
+            }
+        }
+    }
+    if(matches!=1){target.leaveParty=nullptr;target.leavePartyRva=0;error="native follower leave entry not unique";return false;}
+    target.partyVtable=reinterpret_cast<void**>(image.base+partyVtable);target.partyComponentOffset=partyOffset;
+    target.partyActiveOffset=activeOffset;target.partyGroupOffset=groupOffset;target.partyLeaderOffset=leaderOffset;
     error=nullptr;return true;
 }

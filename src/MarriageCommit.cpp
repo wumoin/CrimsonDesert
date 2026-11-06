@@ -326,6 +326,16 @@ void* __fastcall replacementDialogueEndRequest(void* request, DWORD* result, voi
 struct RuntimeActionContext { const MarriageCommitTarget* layout; PartnerSpawnControl original; void* component; std::uint16_t playable; };
 DWORD invokeSinglePartner(void* raw, DWORD key, bool spawn) {
     const auto& call = *static_cast<RuntimeActionContext*>(raw);
+    if(!spawn && HasSelectedPartnerSummon()) {
+        DWORD selected=0;std::uint16_t character=0xffff;bool requestedSpawn=true;
+        if(!ReadSelectedPartnerSummon(call.component,call.playable,selected,character,&requestedSpawn) || selected!=key)
+            return call.layout->runtime.unavailableResult;
+        if(!requestedSpawn) {
+            bool alreadyRecalled=false;
+            const auto prepared=PrepareSelectedPartnerRecall(call.component,call.playable,key,alreadyRecalled);
+            if(prepared || alreadyRecalled)return prepared;
+        }
+    }
     SpawnRoute route{call.playable, call.component, key}; SpawnRouteScope scope(route);
     DWORD result = call.layout->runtime.unavailableResult;
     call.original(call.component, &result, spawn, call.playable);
@@ -399,8 +409,8 @@ void* __fastcall replacementDivorceCurrent(void* component, DWORD* result) {
 void* __fastcall replacementPartnerCreate(void* component, DWORD* result, std::uint16_t playable,
     DWORD* actorId, const DWORD* npcKey, bool party) {
     if(HasSelectedPartnerSummon()) {
-        DWORD selected=0,actual=0;std::uint16_t character=0xffff;
-        if(!ReadSelectedPartnerSummon(component,playable,selected,character) || !copyReadable(&actual,npcKey,sizeof(actual)) || actual!=selected) {
+        DWORD selected=0,actual=0;std::uint16_t character=0xffff;bool spawn=false;
+        if(!ReadSelectedPartnerSummon(component,playable,selected,character,&spawn) || !spawn || !copyReadable(&actual,npcKey,sizeof(actual)) || actual!=selected) {
             if(result)*result=installedTarget.runtime.unavailableResult;return result;
         }
         // 原版同行创建分支使用当前操控角色附近的位置；房屋分支使用住处出场点。
@@ -441,9 +451,9 @@ void* __fastcall replacementLookup(void* component,std::uint16_t playable) {
 void* __fastcall replacementSpawnControl(void* component,void* result,bool spawn,std::uint16_t playable) {
     try {
         if(HasSelectedPartnerSummon() && !spawnRoute) {
-            DWORD key=0;std::uint16_t character=0xffff;PartnerActionObservation action{};action.result=installedTarget.runtime.unavailableResult;
-            if(spawn && ReadSelectedPartnerSummon(component,playable,key,character))
-                action=EvaluateSelectedPartnerSpawn(installedTarget,originalSpawnControl,component,playable,key,character);
+            DWORD key=0;std::uint16_t character=0xffff;bool requestedSpawn=false;PartnerActionObservation action{};action.result=installedTarget.runtime.unavailableResult;
+            if(ReadSelectedPartnerSummon(component,playable,key,character,&requestedSpawn) && spawn==requestedSpawn)
+                action=EvaluateSelectedPartnerAction(installedTarget,originalSpawnControl,component,playable,key,character,spawn);
             ReportSelectedPartnerSummon(action);if(result)std::memcpy(result,&action.result,sizeof(action.result));return result;
         }
         return EvaluatePartnerSpawnAction(installedTarget,originalSpawnControl,component,result,spawn,playable,
@@ -588,13 +598,13 @@ void* EvaluateLivingPartnerSelection(const MarriageCommitTarget& layout, LivingP
     return capture(selected);
 }
 
-PartnerActionObservation EvaluateSelectedPartnerSpawn(const MarriageCommitTarget& layout,PartnerSpawnControl original,
-    void* component,std::uint16_t playable,DWORD key,std::uint16_t character) {
+PartnerActionObservation EvaluateSelectedPartnerAction(const MarriageCommitTarget& layout,PartnerSpawnControl original,
+    void* component,std::uint16_t playable,DWORD key,std::uint16_t character,bool spawn) {
     PartnerActionObservation denied{};denied.result=layout.runtime.unavailableResult;unsigned count=0;std::uint16_t actual=0xffff;
     const auto record=marriedRecord(layout,component,playable,key,count);
     if(!original || !record || !copyReadable(&actual,static_cast<const BYTE*>(record)+0xc,sizeof(actual)) || actual!=character)return denied;
     RuntimeActionContext call{&layout,original,component,playable};
-    return ReconcilePartnerAction(layout,component,playable,key,true,invokeSinglePartner,&call);
+    return ReconcilePartnerAction(layout,component,playable,key,spawn,invokeSinglePartner,&call);
 }
 
 void* EvaluatePartnerSpawnAction(const MarriageCommitTarget& layout,PartnerSpawnControl original,
