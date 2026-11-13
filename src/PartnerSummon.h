@@ -3,11 +3,13 @@
 
 using NativePartnerSummonSend=void(__fastcall*)(void*,unsigned,const BYTE*,const DWORD*);
 using NativePlayableInfo=const void*(__fastcall*)(void*,std::uint16_t);
+using NativePlayableInfoByPointer=const void*(__fastcall*)(const std::uint16_t*);
 using NativePartnerSummonDispatch=void(__fastcall*)(void*,void*,const BYTE*,const DWORD*);
 using NativePartnerPartyLeave=void*(__fastcall*)(void*,DWORD*,bool,bool);
 struct PartnerSummonTarget {
     NativePartnerSummonSend send=nullptr;
     NativePlayableInfo playableInfo=nullptr;
+    NativePlayableInfoByPointer playableInfoByPointer=nullptr;
     NativePartnerSummonDispatch dispatch=nullptr;
     unsigned playableKeyOffset=0;
     DWORD sendRva=0,dispatchRva=0;

@@ -6,6 +6,17 @@ namespace {
 std::wstring testIni;
 int finishMode=0;
 unsigned nativeEditorCalls=0;
+BYTE fakeCharacterInfo[0x120]{};void* fakeNameObject[1]{};void* fakeNameVtable[2]{};std::uint16_t lookedUpCharacter=0;
+const char* __fastcall fakeLocalizedName(void*,bool){return "\xe6\xb5\x8b\xe8\xaf\x95\xe5\x90\x8d\xe5\xad\x97";}
+void* __fastcall fakeCharacterLookup(const std::uint16_t* id){lookedUpCharacter=*id;return fakeCharacterInfo;}
+void testCharacterNameLookup() {
+    const auto previous=ui;ui={};ui.characterInfo=fakeCharacterLookup;ui.nameOffset=0x110;
+    fakeNameVtable[1]=reinterpret_cast<void*>(&fakeLocalizedName);fakeNameObject[0]=fakeNameVtable;
+    void* name=fakeNameObject;std::memcpy(fakeCharacterInfo+0x110,&name,sizeof(name));
+    assert(ReadPartnerOriginalName({435,3006,0},0)==L"测试名字" && lookedUpCharacter==3006);
+    assert(ReadPartnerOriginalName({435,0xffff,0},0)==std::wstring(UiString(UiText::PartnerFallbackPrefix))+L"1");
+    ui=previous;puts("PASS: character id pointer lookup returns the localized original name and rejects invalid id.");
+}
 void testPlayerContext() {
     const auto previousUi=ui;const auto previousMarriage=marriage;
     BYTE world[0x100]{},manager[0x100]{},session[0x200]{},owner[0x100]{},ownerComponents[0x200]{};
@@ -143,6 +154,6 @@ int wmain(int argc,wchar_t** argv) {
         Choice data=previewChoices();const auto layout=beautyLayout();
         assert(DialogBoxIndirectParamW(GetModuleHandleW(nullptr),reinterpret_cast<const DLGTEMPLATE*>(layout.data()),
             nullptr,dialog,reinterpret_cast<LPARAM>(&data))!=-1);
-    } else {testPlayerContext();testBeautyFlow();}
+    } else {testPlayerContext();testCharacterNameLookup();testBeautyFlow();}
     DeleteFileW(testIni.c_str());puts("All beauty picker tests passed.");return 0;
 }

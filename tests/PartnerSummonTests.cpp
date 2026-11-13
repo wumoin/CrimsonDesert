@@ -26,6 +26,7 @@ void* __fastcall fakeLeave(void* party,DWORD* result,bool first,bool second) {
     return result;
 }
 const void* __fastcall fakeInfo(void*,std::uint16_t playable){CHECK(playable==context.playable);return info;}
+const void* __fastcall fakeInfoByPointer(const std::uint16_t* playable){CHECK(playable && *playable==context.playable);return info;}
 void __fastcall fakeSend(void* owner,unsigned,const BYTE* value,const DWORD* playable) {
     CHECK(owner==clientOwner);CHECK(!HasSelectedPartnerSummon());CHECK(*value>=0x80);
     if(throwSend)throw 1;
@@ -133,6 +134,11 @@ int main() {
     native.send=fakeSend;native.playableInfo=fakeInfo;native.playableKeyOffset=8;originalDispatch=fakeNative;ready=true;enabled=true;
     native.leaveParty=fakeLeave;native.partyVtable=partyMethods;native.partyComponentOffset=0x108;native.partyActiveOffset=0x98;native.partyGroupOffset=0x90;native.partyLeaderOffset=0xa0;
     testRouting();
+    native.playableInfo=nullptr;native.playableInfoByPointer=fakeInfoByPointer;
+    const auto priorSelected=selectedCalls;
+    CHECK(RequestPartnerSummon(context,partners[0]));deliver(sentToken,sentRole);
+    CHECK(selectedCalls==priorSelected+1 && selectedKey==100 && sentRole==444);
+    native.playableInfoByPointer=nullptr;native.playableInfo=fakeInfo;
     testContextAndFailures(true);testContextAndFailures(false);
     testPrepareRecall();
     puts("All partner summon bridge tests passed.");return 0;

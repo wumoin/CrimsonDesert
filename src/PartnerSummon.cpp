@@ -105,7 +105,8 @@ bool RequestPartnerSummon(const PartnerUiContext& context,const BeautyPartnerOpt
     void* owner=nullptr;DWORD ownerId=0,actorId=0,playableKey=0;
     if(!field(current.component,8,owner) || !field(owner,layout.runtime.actorIdOffset,ownerId) || !ownerId ||
         !field(current.actor,layout.runtime.actorIdOffset,actorId) || !actorId)return false;
-    const auto info=native.playableInfo(nullptr,current.playable);
+    const auto info=native.playableInfoByPointer ? native.playableInfoByPointer(&current.playable) :
+        (native.playableInfo ? native.playableInfo(nullptr,current.playable) : nullptr);
     if(!field(info,native.playableKeyOffset,playableKey) || !playableKey || playableKey==MAXDWORD)return false;
     PartnerUiContext after{};
     if(!ReadPartnerUiContext(after) || after.actor!=current.actor || after.component!=current.component || after.playable!=current.playable ||

@@ -3,10 +3,12 @@
 #include <string>
 
 using NativeBeautyEntry = void(__fastcall*)(void*,void*,void*,void*);
+using NativeCharacterInfo = void*(__fastcall*)(const std::uint16_t*);
 struct BeautyUiTarget {
     NativeBeautyEntry entry=nullptr;
     void** clientWorld=nullptr;
     void** characters=nullptr;
+    NativeCharacterInfo characterInfo=nullptr;
     unsigned worldManager=0, managerSession=0, sessionActor=0, managerPlayer=0;
     unsigned modeOffset=0, nameOffset=0;
 };

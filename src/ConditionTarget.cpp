@@ -551,10 +551,13 @@ void findPartnerSpawnControl(const Image& image,MarriageCommitTarget& target) {
             constexpr unsigned char args[]={0x41,0x0f,0xb7,0xd9,0x45,0x0f,0xb6,0xf8,0x48,0x8b,0xf2,
                 0x4c,0x8b,0xf1,0x48,0x8b,0x79,0x08,0x48,0x8d,0x57,0x08};
             constexpr unsigned char keyAndActor[]={0x8b,0x78,0x04,0x8b,0x00};
+            constexpr unsigned char args3663[]={0x41,0x0f,0xb7,0xf9,0x45,0x0f,0xb6,0xf8,0x48,0x8b,0xf2,
+                0x4c,0x8b,0xf1,0x48,0x8b,0x59,0x08,0x48,0x8d,0x53,0x08};
+            constexpr unsigned char keyAndActor3663[]={0x8b,0x58,0x04,0x8b,0x00};
             for(DWORD i=0;i+sizeof(keyAndActor)<=length;++i) {
                 const auto q=image.base+begin+i;
-                if(i+sizeof(args)<=length && !std::memcmp(q,args,sizeof(args)))arguments=true;
-                if(!std::memcmp(q,keyAndActor,sizeof(keyAndActor)))record=true;
+                if(i+sizeof(args)<=length && (!std::memcmp(q,args,sizeof(args)) || !std::memcmp(q,args3663,sizeof(args3663))))arguments=true;
+                if(!std::memcmp(q,keyAndActor,sizeof(keyAndActor)) || !std::memcmp(q,keyAndActor3663,sizeof(keyAndActor3663)))record=true;
             }
             if(!arguments || !record || !spawnOutputIsDword(image,begin,length))continue;
             if(matches && target.spawnRva==begin)continue;
@@ -606,8 +609,10 @@ bool findMarriageRouting(const Image& image, MarriageCommitTarget& target, DWORD
                 const auto q=image.base+begin+i;
                 constexpr unsigned char save[] = {0xc6,0x44,0xf8,0x2c,0x02};
                 constexpr unsigned char append[] = {0x41,0xb1,0x02,0x44,0x8b,0x40,0x08,0x48,0x8b,0xd6};
+                // 1.0.0.3663: the same component argument is held in r13 instead of rsi.
+                constexpr unsigned char appendR13[] = {0x41,0xb1,0x02,0x44,0x8b,0x40,0x08,0x49,0x8b,0xd5};
                 if (!std::memcmp(q,save,sizeof(save))) savedState=true;
-                if (!std::memcmp(q,append,sizeof(append))) runtimeState=true;
+                if (!std::memcmp(q,append,sizeof(append)) || !std::memcmp(q,appendR13,sizeof(appendR13))) runtimeState=true;
             }
             if (!savedState || !runtimeState) continue;
             if (++writers != 1) { error="multiple marriage write callers"; return false; }
@@ -908,7 +913,9 @@ bool FindPartnerRuntimeTarget(HMODULE module, MarriageCommitTarget& target, cons
             if (std::memcmp(image.base + at, divorced, sizeof(divorced))) continue;
             DWORD begin = 0, size = 0; if (!image.functionRange(at, begin, size)) continue;
             constexpr unsigned char args[] = {0x4c,0x89,0x4c,0x24,0x20,0x48,0x89,0x54,0x24,0x10,0x48,0x89,0x4c,0x24,0x08};
-            if (size < sizeof(args) || std::memcmp(image.base + begin, args, sizeof(args))) continue;
+            constexpr unsigned char args3663[] = {0x48,0x89,0x5c,0x24,0x10,0x4c,0x89,0x4c,0x24,0x20,0x66,0x44,0x89,0x44,0x24,0x18,0x48,0x89,0x4c,0x24,0x08};
+            if (size < sizeof(args) || (std::memcmp(image.base + begin, args, sizeof(args)) &&
+                (size < sizeof(args3663) || std::memcmp(image.base + begin, args3663, sizeof(args3663))))) continue;
             if (byKey != begin) { byKey = begin; ++byKeys; }
         }
     }
@@ -1219,6 +1226,27 @@ bool FindBeautyUiTarget(HMODULE module,const MarriageCommitTarget& marriage,Beau
             DWORD ms=0;if(method<=0 || method>=image.size || !image.functionSize(static_cast<DWORD>(method),ms))continue;
             constexpr unsigned char textField[]={0x48,0x8b,0x88,0x10,1,0,0};
             if(!codeHas(image,static_cast<DWORD>(method),ms,textField,sizeof(textField)))continue;
+            // Newer builds resolve the character table through a native function taking
+            // a pointer to the 16-bit character id, rather than indexing the manager.
+            constexpr unsigned char infoHead[]={0x48,0x83,0xec,0x28,0x44,0x0f,0xb7,0x01,0x48,0x8b,0x0d};
+            unsigned infoMatches=0;bool pointerPath=false;
+            for(DWORD k=8;k+5+sizeof(textField)<=ms;++k) {
+                const auto callSite=image.base+method+k;
+                if(callSite[0]!=0xe8 || std::memcmp(callSite+5,textField,sizeof(textField)))continue;
+                const auto lea=callSite-8;
+                if(lea[0]!=0x48 || lea[1]!=0x8d || lea[2]!=0x8c || lea[3]!=0x24)continue;
+                pointerPath=true;
+                std::int32_t call=0;std::memcpy(&call,callSite+1,4);
+                const auto destination=method+k+5+call;
+                if(destination<=0 || destination>=image.size || !image.contains(static_cast<DWORD>(destination),sizeof(infoHead),true) ||
+                    std::memcmp(image.base+destination,infoHead,sizeof(infoHead)))continue;
+                target.characterInfo=reinterpret_cast<NativeCharacterInfo>(image.base+destination);target.nameOffset=0x110;++infoMatches;
+            }
+            if(pointerPath) {
+                target.characters=nullptr;
+                if(infoMatches!=1)target.characterInfo=nullptr;
+                continue;
+            }
             for(DWORD k=0;k+7<=(std::min)(ms,DWORD{128});++k) {
                 const auto m=image.base+method+k;
                 if(m[0]!=0x4c || m[1]!=0x8b || m[2]!=0x1d)continue;
@@ -1383,8 +1411,15 @@ bool FindPartnerSummonTarget(HMODULE module,const MarriageCommitTarget& marriage
         const auto calls=callsIn(image,begin,length,false);
         for(std::size_t i=0;i+1<calls.size();++i) {
             const auto info=calls[i],send=calls[i+1];const auto q=image.base+info.first+5;
-            if(info.first<begin+2 || info.first+9>begin+length || image.base[info.first-2]!=0x8b ||
-                (image.base[info.first-1]&0xf8)!=0xd0 || q[0]!=0x4c || q[1]!=0x8d || q[2]!=0x48 || !q[3] || q[3]>=128)continue;
+            if(info.first<begin+5 || info.first+9>begin+length || q[0]!=0x4c || q[1]!=0x8d || q[2]!=0x48 || !q[3] || q[3]>=128)continue;
+            const bool oldInfo=image.base[info.first-2]==0x8b && (image.base[info.first-1]&0xf8)==0xd0;
+            const auto before=image.base+info.first-5;
+            const BYTE pointerHead[]={0x48,0x83,0xec,0x28,0x44,0x0f,0xb7,0x01,0x48,0x8b,0x0d};
+            const BYTE roleRead[]={0x0f,0xb7,0x5f,0x04,0x66,0x89,0x5c,0x24,before[4]};
+            const bool pointerInfo=before[0]==0x48 && before[1]==0x8d && before[2]==0x4c && before[3]==0x24 &&
+                codeHas(image,begin,info.first-begin-5,roleRead,sizeof(roleRead)) && image.contains(info.second,sizeof(pointerHead),true) &&
+                !std::memcmp(image.base+info.second,pointerHead,sizeof(pointerHead));
+            if(!oldInfo && !pointerInfo)continue;
             DWORD size=0;if(!image.functionSize(send.second,size) || size>1024)continue;
             const auto peer=std::search(image.base+send.second,image.base+send.second+size,std::begin(peerSlot),std::end(peerSlot));
             if(peer==image.base+send.second+size)continue;
@@ -1400,8 +1435,10 @@ bool FindPartnerSummonTarget(HMODULE module,const MarriageCommitTarget& marriage
             if(!samePacket || !rawWriter)continue;
             if(!target.send) {
                 target.sendRva=send.second;target.send=reinterpret_cast<NativePartnerSummonSend>(image.base+send.second);
-                target.playableInfo=reinterpret_cast<NativePlayableInfo>(image.base+info.second);target.playableKeyOffset=q[3];++senders;
-            } else if(target.sendRva!=send.second || reinterpret_cast<const BYTE*>(target.playableInfo)!=image.base+info.second || target.playableKeyOffset!=q[3])++senders;
+                if(pointerInfo) target.playableInfoByPointer=reinterpret_cast<NativePlayableInfoByPointer>(image.base+info.second);
+                else target.playableInfo=reinterpret_cast<NativePlayableInfo>(image.base+info.second);
+                target.playableKeyOffset=q[3];++senders;
+            } else if(target.sendRva!=send.second || (pointerInfo ? reinterpret_cast<const BYTE*>(target.playableInfoByPointer) : reinterpret_cast<const BYTE*>(target.playableInfo))!=image.base+info.second || target.playableKeyOffset!=q[3])++senders;
         }
     }
     if(senders!=1){error="native summon client sender/playable key ABI not unique";target={};return false;}

@@ -36,6 +36,7 @@ int wmain(int argc,wchar_t** argv) {
         FindBeautyPartnerLookup(module,marriage) && FindBeautyUiTarget(module,marriage,ui) && FindPartnerNameTarget(module,marriage,names,&error) &&
         FindPartnerSummonTarget(module,marriage,summon,error) && FindPartnerRecallTarget(module,marriage,summon,error);
     printf("Name target: %s (%s)\n",ok?"PASS":"FAIL",error?error:"no layout error");
+    printf("Marriage eligibility RVA=%lx writer RVA=%lx lookup RVA=%lx spawn RVA=%lx\n", marriage.functionRva, marriage.writerRva, marriage.lookupRva, marriage.spawnRva);
     if(ok) {
         printf("UI world RVA=%llx offsets=%x/%x/%x player=%x; records=%x/%x/%x/%x keys=%x/%x/%x/%x actorId=%x contents=%x playable=%x\n",
             reinterpret_cast<const BYTE*>(ui.clientWorld)-image,ui.worldManager,ui.managerSession,ui.sessionActor,
@@ -48,6 +49,28 @@ int wmain(int argc,wchar_t** argv) {
             names.managerOffset,names.registryOffset,names.bucketCountOffset,names.bucketsOffset,names.entriesOffset,names.statusOffset,names.nameOffset);
         printf("Summon send RVA=%lx dispatch RVA=%lx playable-key offset=%x\n",summon.sendRva,summon.dispatchRva,summon.playableKeyOffset);
         printf("Recall leave RVA=%lx party offsets=%x/%x/%x/%x\n",summon.leavePartyRva,summon.partyComponentOffset,summon.partyActiveOffset,summon.partyGroupOffset,summon.partyLeaderOffset);
+        printf("Character original name lookup RVA=%llx\n",ui.characterInfo ? reinterpret_cast<const BYTE*>(ui.characterInfo)-image : 0ull);
+        if(ui.characterInfo) {
+            auto* lookup=reinterpret_cast<BYTE*>(ui.characterInfo);const auto original=*lookup;*lookup=0xcc;
+            BeautyUiTarget changedUi{};
+            if(!FindBeautyUiTarget(module,marriage,changedUi) || changedUi.characterInfo || changedUi.characters) {
+                puts("Changed character name lookup ABI was not safely disabled.");ok=false;
+            }
+            *lookup=original;
+            if(!FindBeautyUiTarget(module,marriage,changedUi) || changedUi.characterInfo!=ui.characterInfo) {
+                puts("Restored character name lookup ABI was not accepted.");ok=false;
+            }
+        }
+        const char* restoreError=nullptr;
+        const bool restoreOk=FindPartnerRestoreTarget(module,marriage,restoreError);
+        printf("Partner restore: %s (%s), RVA=%lx\n",restoreOk?"PASS":"UNAVAILABLE",restoreError?restoreError:"verified",marriage.runtime.restoreRva);
+        if(summon.playableInfoByPointer) {
+            auto* entry=reinterpret_cast<BYTE*>(summon.playableInfoByPointer);const auto original=*entry;*entry=0xcc;
+            PartnerSummonTarget changed{};const char* changedError=nullptr;
+            if(FindPartnerSummonTarget(module,marriage,changed,changedError)){puts("Changed playable-info ABI was incorrectly accepted.");ok=false;}
+            *entry=original;
+            if(!FindPartnerSummonTarget(module,marriage,changed,changedError)){puts("Restored playable-info ABI was incorrectly rejected.");ok=false;}
+        }
         auto* leave=reinterpret_cast<BYTE*>(summon.leaveParty);const auto leaveByte=*leave;*leave=0xcc;
         PartnerSummonTarget changedRecall{};
         if(FindPartnerRecallTarget(module,marriage,changedRecall,error)){puts("Changed party leave ABI was incorrectly accepted.");ok=false;}

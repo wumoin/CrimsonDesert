@@ -147,7 +147,7 @@ DWORD WINAPI run(void*) {
     wcscpy_s(iniPath, logPath);
     dot = wcsrchr(iniPath, L'.');
     wcscpy_s(dot, MAX_PATH - (dot - iniPath), L".ini");
-    log("Plugin loaded. v0.1.4: selected partner summon, configurable manager hotkey, automatic INI completion and protagonist context guards.");
+    log("Plugin loaded. v0.1.5 compatibility update for game 1.0.0.3663: selected partner summon, configurable manager hotkey and protagonist context guards.");
 
     // 全部定位成功才安装；配置暂时关闭的条件也先定位，便于运行中切换。
     for (unsigned i = 0; i < conditionCount; ++i) {

@@ -55,9 +55,10 @@ bool player(void*& actor,void*& component,std::uint16_t& playable) {
 std::wstring partnerName(const BeautyPartnerOption& partner,unsigned index) {
     void* manager=nullptr;void* cache=nullptr;void* info=nullptr;void* name=nullptr;void* vt=nullptr;void* method=nullptr;
     DWORD count=0;
-    if(ui.characters && read(&manager,ui.characters,8) && field(manager,8,count) && count<=65536 && partner.character<count &&
-        field(manager,0x58,cache) && field(cache,static_cast<unsigned>(partner.character)*8,info) &&
-        field(info,ui.nameOffset,name) && field(name,0,vt) && field(vt,8,method)) {
+    if(ui.characterInfo && partner.character!=0xffff)info=ui.characterInfo(&partner.character);
+    else if(ui.characters && read(&manager,ui.characters,8) && field(manager,8,count) && count<=65536 && partner.character<count &&
+        field(manager,0x58,cache))field(cache,static_cast<unsigned>(partner.character)*8,info);
+    if(field(info,ui.nameOffset,name) && field(name,0,vt) && field(vt,8,method)) {
         MEMORY_BASIC_INFORMATION page{};
         if(VirtualQuery(method,&page,sizeof(page)) && page.State==MEM_COMMIT &&
             (page.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) {
@@ -202,6 +203,6 @@ bool InstallBeautyPicker(HMODULE module,const MarriageCommitTarget& target,Plugi
     InstallPartnerManager(module,target);
     auto status=MH_CreateHook(reinterpret_cast<void*>(ui.entry),reinterpret_cast<void*>(&entry),reinterpret_cast<void**>(&original));
     if(status==MH_OK) {status=MH_EnableHook(reinterpret_cast<void*>(ui.entry));if(status!=MH_OK)MH_RemoveHook(reinterpret_cast<void*>(ui.entry));}
-    if(logger){char line[192];sprintf_s(line,"BEAUTY PICKER HOOK: status=%s names=%d; native editor/target routing, plugin selection window.",MH_StatusToString(status),ui.characters!=nullptr);logger(line);}
+    if(logger){char line[192];sprintf_s(line,"BEAUTY PICKER HOOK: status=%s names=%d; native editor/target routing, plugin selection window.",MH_StatusToString(status),ui.characters!=nullptr || ui.characterInfo!=nullptr);logger(line);}
     return status==MH_OK;
 }
