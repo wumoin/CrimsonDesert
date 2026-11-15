@@ -6,6 +6,7 @@ using NativePlayableInfo=const void*(__fastcall*)(void*,std::uint16_t);
 using NativePlayableInfoByPointer=const void*(__fastcall*)(const std::uint16_t*);
 using NativePartnerSummonDispatch=void(__fastcall*)(void*,void*,const BYTE*,const DWORD*);
 using NativePartnerPartyLeave=void*(__fastcall*)(void*,DWORD*,bool,bool);
+using NativeHomePartnerAction=void(__fastcall*)(void*,void*,DWORD,bool);
 struct PartnerSummonTarget {
     NativePartnerSummonSend send=nullptr;
     NativePlayableInfo playableInfo=nullptr;
@@ -17,8 +18,11 @@ struct PartnerSummonTarget {
     void** partyVtable=nullptr;
     unsigned partyComponentOffset=0,partyActiveOffset=0,partyGroupOffset=0,partyLeaderOffset=0;
     DWORD leavePartyRva=0;
+    NativeHomePartnerAction homeAction=nullptr;
+    void* homeEnterReturn=nullptr;
 };
 bool FindPartnerSummonTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerSummonTarget& target,const char*& error);
+bool FindHomePartnerTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerSummonTarget& target,const char*& error);
 bool FindPartnerRecallTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerSummonTarget& target,const char*& error);
 bool InstallPartnerSummon(HMODULE module,const MarriageCommitTarget& marriage,PluginLog log);
 void SetPartnerSummonEnabled(bool enabled);

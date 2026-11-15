@@ -59,6 +59,7 @@ struct PartnerActor {
 bool CollectPartnerActors(const MarriageCommitTarget& layout, void* component,
     std::uint16_t playable, std::vector<PartnerActor>& actors);
 bool IsPartnerRuntimeReady();
+bool IsPartnerSpawnAllEnabled();
 
 // 回调保持原版场景检查和消息发送；运行时只修复已验证关系的实例关联，不改婚姻状态。
 using PartnerActionInvoker = DWORD(*)(void*, DWORD, bool);

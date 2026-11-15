@@ -15,6 +15,7 @@ bool actorsAvailable=true,leaveClears=true,leaveAlsoRecalls=false;DWORD leaveRes
 PartnerUiContext context{controlled,component,3};
 std::vector<BeautyPartnerOption> partners{{100,50,0},{200,60,0}};
 bool contextAvailable=true,throwSend=false,reachControl=true;
+bool spawnAllActive=true,homeOriginalSends=false;
 bool selectedSpawn=true;
 unsigned sends=0,nativeCalls=0,selectedCalls=0,normalCalls=0;
 BYTE sentToken=0;DWORD sentRole=0,selectedKey=0;std::uint16_t selectedCharacter=0;
@@ -28,9 +29,12 @@ void* __fastcall fakeLeave(void* party,DWORD* result,bool first,bool second) {
 const void* __fastcall fakeInfo(void*,std::uint16_t playable){CHECK(playable==context.playable);return info;}
 const void* __fastcall fakeInfoByPointer(const std::uint16_t* playable){CHECK(playable && *playable==context.playable);return info;}
 void __fastcall fakeSend(void* owner,unsigned,const BYTE* value,const DWORD* playable) {
-    CHECK(owner==clientOwner);CHECK(!HasSelectedPartnerSummon());CHECK(*value>=0x80);
+    CHECK(owner==clientOwner);CHECK(!HasSelectedPartnerSummon());CHECK(*value>=0x80 || *value==1);
     if(throwSend)throw 1;
     ++sends;sentToken=*value;sentRole=*playable;
+}
+void __fastcall fakeHomeAction(void*,void* owner,DWORD,bool) {
+    if(homeOriginalSends){const BYTE action=1;const DWORD role=444;observeSend(owner,0,&action,&role);}
 }
 void __fastcall fakeNative(void*,void* raw,const BYTE* value,const DWORD*) {
     ++nativeCalls;
@@ -123,7 +127,9 @@ bool ReadPartnerUiContext(PartnerUiContext& value){value=context;return contextA
 bool ReadBeautyPartners(void*,std::uint16_t,std::vector<BeautyPartnerOption>& values){values=partners;return contextAvailable;}
 bool VerifyBeautyPartner(void*,std::uint16_t playable,DWORD key){return contextAvailable && playable==context.playable && (key==100 || key==200);}
 bool FindPartnerSummonTarget(HMODULE,const MarriageCommitTarget&,PartnerSummonTarget&,const char*&){return false;}
+bool FindHomePartnerTarget(HMODULE,const MarriageCommitTarget&,PartnerSummonTarget&,const char*&){return false;}
 bool FindPartnerRecallTarget(HMODULE,const MarriageCommitTarget&,PartnerSummonTarget&,const char*&){return false;}
+bool IsPartnerSpawnAllEnabled(){return spawnAllActive;}
 bool CollectPartnerActors(const MarriageCommitTarget&,void*,std::uint16_t,std::vector<PartnerActor>& actors){actors=liveActors;return actorsAvailable;}
 int main() {
     layout.runtime.actorIdOffset=0x60;
@@ -141,5 +147,26 @@ int main() {
     native.playableInfoByPointer=nullptr;native.playableInfo=fakeInfo;
     testContextAndFailures(true);testContextAndFailures(false);
     testPrepareRecall();
+    // 仅住宅和主角匹配、既有在场又有缺席时补发一次普通召唤。
+    BYTE clientComponents[0x200]{},clientContents[0x200]{},houseRecord[48]{};
+    put<void*>(clientOwner,0x68,clientComponents);put<void*>(clientComponents,0x168,clientContents);
+    void* oldComponent=context.component;context.component=clientContents;put<void*>(clientContents,8,clientOwner);
+    put<void*>(clientContents,0x148,houseRecord);put<DWORD>(clientContents,0x150,1);put<DWORD>(houseRecord,0,10);put<std::uint16_t>(houseRecord,8,context.playable);
+    originalSend=fakeSend;partners={{100,50,123},{200,60,0}};lastHomeSend=0;
+    const auto homeSends=sends;
+    CHECK(!tryHomeSupplement(clientOwner,11));spawnAllActive=false;CHECK(!tryHomeSupplement(clientOwner,10));spawnAllActive=true;
+    put<std::uint16_t>(houseRecord,8,0);CHECK(!tryHomeSupplement(clientOwner,10));put<std::uint16_t>(houseRecord,8,context.playable);
+    CHECK(tryHomeSupplement(clientOwner,10));CHECK(sends==homeSends+1 && sentToken==1 && sentRole==444);
+    CHECK(!tryHomeSupplement(clientOwner,10));lastHomeSend=0;
+    partners[1].actorId=456;CHECK(!tryHomeSupplement(clientOwner,10));
+    partners[0].actorId=0;partners[1].actorId=0;CHECK(!tryHomeSupplement(clientOwner,10));
+    partners[0].actorId=123;originalHomeAction=fakeHomeAction;
+    const auto scopedSends=sends;homeOriginalSends=true;handleHomeAction(nullptr,clientOwner,10,true,true);
+    CHECK(sends==scopedSends+1);
+    homeOriginalSends=false;handleHomeAction(nullptr,clientOwner,10,false,true);handleHomeAction(nullptr,clientOwner,10,true,false);
+    CHECK(sends==scopedSends+1);
+    handleHomeAction(nullptr,clientOwner,10,true,true);CHECK(sends==scopedSends+2);
+    context.component=oldComponent;originalSend=nullptr;
+    puts("PASS: home supplement is limited to a verified home entry with missing partners; native requests are not duplicated.");
     puts("All partner summon bridge tests passed.");return 0;
 }

@@ -4,12 +4,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <intrin.h>
 
 namespace {
 constexpr ULONGLONG requestLifetime=10000,tokenQuarantine=60000;
 PartnerSummonTarget native{};
 MarriageCommitTarget layout{};
 NativePartnerSummonDispatch originalDispatch=nullptr;
+NativePartnerSummonSend originalSend=nullptr;
+NativeHomePartnerAction originalHomeAction=nullptr;
 PluginLog logger=nullptr;
 std::atomic<bool> ready{false},enabled{false};
 SRWLOCK requestLock=SRWLOCK_INIT;
@@ -28,11 +31,57 @@ unsigned nextToken=0;
 struct Selection {Request request;void* owner=nullptr;bool consumed=false;};
 thread_local Selection* selection=nullptr;
 thread_local bool detachingParty=false;
+struct HomeSendScope {bool sent=false;HomeSendScope* previous=nullptr;};
+thread_local HomeSendScope* homeSendScope=nullptr;
+std::atomic<ULONGLONG> lastHomeSend{0};
 bool read(void* out,const void* at,std::size_t size) {
     SIZE_T got=0;return at && ReadProcessMemory(GetCurrentProcess(),at,out,size,&got) && got==size;
 }
 template<class T> bool field(const void* at,unsigned offset,T& value) {
     return at && offset<=4096 && read(&value,static_cast<const BYTE*>(at)+offset,sizeof(value));
+}
+void __fastcall observeSend(void* owner,unsigned flags,const BYTE* spawn,const DWORD* playableKey) {
+    if(homeSendScope)homeSendScope->sent=true;
+    originalSend(owner,flags,spawn,playableKey);
+}
+bool tryHomeSupplement(void* owner,DWORD houseKey) {
+    if(!owner || !ready || !enabled || !IsPartnerSpawnAllEnabled() || !originalSend)return false;
+    PartnerUiContext context{};std::vector<BeautyPartnerOption> partners;void* actualOwner=nullptr;
+    if(!ReadPartnerUiContext(context) || !field(context.component,8,actualOwner) || actualOwner!=owner ||
+        !ReadBeautyPartners(context.component,context.playable,partners) || partners.size()<2 || partners.size()>4096)return false;
+    // 字段布局由 FindHomePartnerTarget 中的原生住宅入口特征核对。
+    void* components=nullptr;void* contents=nullptr;void* houses=nullptr;DWORD count=0;unsigned matches=0;
+    if(!field(owner,0x68,components) || !field(components,0x168,contents) || contents!=context.component ||
+        !field(contents,0x148,houses) || !field(contents,0x150,count) || !houses || !count || count>4096)return false;
+    for(DWORD i=0;i<count;++i) {
+        DWORD key=0;std::uint16_t role=0xffff;const auto record=static_cast<const BYTE*>(houses)+static_cast<std::size_t>(i)*48;
+        if(!field(record,0,key) || !field(record,8,role))return false;
+        if(key==houseKey && role==context.playable)++matches;
+    }
+    if(matches!=1)return false;
+    bool present=false,missing=false;
+    for(const auto& partner:partners){if(!partner.key || partner.character==0xffff)return false;if(partner.actorId)present=true;else missing=true;}
+    if(!present || !missing)return false;
+    const auto info=native.playableInfoByPointer ? native.playableInfoByPointer(&context.playable) :
+        (native.playableInfo ? native.playableInfo(nullptr,context.playable) : nullptr);
+    DWORD playableKey=0;if(!field(info,native.playableKeyOffset,playableKey) || !playableKey || playableKey==MAXDWORD)return false;
+    PartnerUiContext after{};if(!ReadPartnerUiContext(after) || after.actor!=context.actor || after.component!=context.component || after.playable!=context.playable)return false;
+    auto previous=lastHomeSend.load();const auto now=GetTickCount64();
+    if((previous && now-previous<2000) || !lastHomeSend.compare_exchange_strong(previous,now?now:1))return false;
+    const BYTE spawn=1;originalSend(owner,0,&spawn,&playableKey);
+    if(logger)logger("PARTNER HOME SUPPLEMENT: native home entry suppressed its request; sent one ordinary spawn request for missing partners.");
+    return true;
+}
+void handleHomeAction(void* self,void* owner,DWORD houseKey,bool spawn,bool homeEntry) {
+    if(!originalHomeAction)return;
+    if(!spawn || !homeEntry || homeSendScope) {originalHomeAction(self,owner,houseKey,spawn);return;}
+    HomeSendScope scope{};scope.previous=homeSendScope;homeSendScope=&scope;
+    struct Reset {HomeSendScope* previous;~Reset(){homeSendScope=previous;}} reset{scope.previous};
+    originalHomeAction(self,owner,houseKey,spawn);
+    if(!scope.sent)try {tryHomeSupplement(owner,houseKey);} catch(...) {if(logger)logger("PARTNER HOME SUPPLEMENT BLOCKED: context could not be verified.");}
+}
+void __fastcall homeAction(void* self,void* owner,DWORD houseKey,bool spawn) {
+    handleHomeAction(self,owner,houseKey,spawn,_ReturnAddress()==native.homeEnterReturn);
 }
 void expire(ULONGLONG now) {
     if((pending.queued || pending.processing) && now-pending.created>requestLifetime){pending.queued=false;pending.processing=false;}
@@ -88,6 +137,21 @@ bool InstallPartnerSummon(HMODULE module,const MarriageCommitTarget& marriage,Pl
     if(status==MH_OK){status=MH_EnableHook(reinterpret_cast<void*>(native.dispatch));if(status!=MH_OK)MH_RemoveHook(reinterpret_cast<void*>(native.dispatch));}
     ready=status==MH_OK;
     if(logger){char line[224];sprintf_s(line,"PARTNER MANAGER SUMMON HOOK: status=%s sendRVA=0x%08lx dispatchRVA=0x%08lx; native client request and server-thread selected-partner action.",MH_StatusToString(status),native.sendRva,native.dispatchRva);logger(line);}
+    if(ready && FindHomePartnerTarget(module,marriage,native,error)) {
+        auto homeStatus=MH_CreateHook(reinterpret_cast<void*>(native.send),reinterpret_cast<void*>(&observeSend),reinterpret_cast<void**>(&originalSend));
+        if(homeStatus==MH_OK) {
+            homeStatus=MH_CreateHook(reinterpret_cast<void*>(native.homeAction),reinterpret_cast<void*>(&homeAction),reinterpret_cast<void**>(&originalHomeAction));
+            if(homeStatus==MH_OK) {
+                homeStatus=MH_QueueEnableHook(reinterpret_cast<void*>(native.send));
+                if(homeStatus==MH_OK)homeStatus=MH_QueueEnableHook(reinterpret_cast<void*>(native.homeAction));
+                if(homeStatus==MH_OK)homeStatus=MH_ApplyQueued();
+                if(homeStatus!=MH_OK){MH_DisableHook(reinterpret_cast<void*>(native.homeAction));MH_RemoveHook(reinterpret_cast<void*>(native.homeAction));}
+            }
+            if(homeStatus!=MH_OK){MH_DisableHook(reinterpret_cast<void*>(native.send));MH_RemoveHook(reinterpret_cast<void*>(native.send));}
+        }
+        if(homeStatus!=MH_OK){originalSend=nullptr;originalHomeAction=nullptr;}
+        if(logger){char line[160];sprintf_s(line,"PARTNER HOME HOOK: status=%s; native residence entry and normal request only.",MH_StatusToString(homeStatus));logger(line);}
+    } else if(ready && logger)logger("PARTNER HOME UNAVAILABLE: native residence entry not verified.");
     return ready;
 }
 void SetPartnerSummonEnabled(bool value) {

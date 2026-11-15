@@ -2,9 +2,9 @@
 
 为《红色沙漠》提供可配置的恋爱与婚姻条件覆盖，支持继续与其他对象结婚、管理已有伴侣，以及全员召唤 / 收回与读档同行恢复。Windows x64 ASI 插件。
 
-[下载 v0.1.5](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.5) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
+[下载 v0.1.6](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.6) · [所有版本](https://github.com/wumoin/CrimsonDesert/releases) · [默认配置](config/CohabitationGateExperiment.ini) · [反馈问题](https://github.com/wumoin/CrimsonDesert/issues)
 
-当前版本为 **v0.1.5 实验预发布版**，适配游戏更新后的婚姻、伴侣管理及原名查询接口。默认按 **F8** 打开管理，支持分别改名、伴侣美容选择和中文 / English 界面。
+当前版本为 **v0.1.6 实验预发布版**，修复归家时已有伴侣在场导致其他伴侣未能自动召唤的问题。默认按 **F8** 打开管理，支持分别改名、伴侣美容选择和中文 / English 界面。
 
 从旧版本升级时，请退出游戏后替换 ASI，保留现有 INI。
 
@@ -27,6 +27,8 @@
 | 弹窗中英文切换 | 两个弹窗顶部共用“语言 / Language”选择，立即切换文案并记住设置 |
 | 全员召唤 / 收回 | 在召唤 / 收回结婚对象时，同步召唤 / 收回所有已婚对象 |
 | 读档恢复同行 | 分别读取各位已婚伴侣保存的同行状态，只恢复已选择同行的对象 |
+
+开启 `SpawnAllPartners=1` 时，归家进入住宅范围若原版因已有伴侣在场而跳过召唤，插件会补发一次原版召唤请求，让其他未出场伴侣也有机会出现；已在场的伴侣继续复用，原版场景检查仍然生效。
 
 ## F8 伴侣管理
 
@@ -76,7 +78,7 @@ Language=zh-CN
 
 - Windows x64，以及包含对应恋爱 / 婚姻系统的游戏内容。
 - 兼容的 x64 ASI Loader。本项目使用过 [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) 的 x64 `winmm.dll`。
-- v0.1.5 发布检查使用游戏 EXE **1.0.0.3663**；v0.1.4 发布检查使用 1.0.0.3527 / Steam build 26423880。其他版本需要以实际定位日志为准。
+- v0.1.6 发布检查使用游戏 EXE **1.0.0.3663**；v0.1.4 发布检查使用 1.0.0.3527 / Steam build 26423880。其他版本需要以实际定位日志为准。
 
 插件在启动时自动查找函数并检查结构。地址移动和部分虚表槽位变化可以自动处理；函数改名、逻辑或编译方式变化仍可能需要更新补丁。无法确认目标时停止对应功能，不强行写入未知位置。
 
@@ -84,11 +86,11 @@ Language=zh-CN
 
 ### 1. 下载发布文件
 
-打开 [v0.1.5 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.5)，下载附件：
+打开 [v0.1.6 Release](https://github.com/wumoin/CrimsonDesert/releases/tag/v0.1.6)，下载附件：
 
-- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.5/CohabitationGateExperiment.asi)：插件。
-- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.5/CohabitationGateExperiment.ini)：首次安装使用的默认配置。
-- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.5/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2；已有兼容加载器可继续使用。
+- [CohabitationGateExperiment.asi](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.6/CohabitationGateExperiment.asi)：插件。
+- [CohabitationGateExperiment.ini](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.6/CohabitationGateExperiment.ini)：首次安装使用的默认配置。
+- [winmm.dll](https://github.com/wumoin/CrimsonDesert/releases/download/v0.1.6/winmm.dll)：首次安装使用的 x64 ASI Loader，来自 Ultimate ASI Loader v10.0.2；已有兼容加载器可继续使用。
 - 附件中的 `MinHook-LICENSE.txt` 和 `Ultimate-ASI-Loader-LICENSE.txt` 为第三方许可证，再分发时一并保留。
 
 

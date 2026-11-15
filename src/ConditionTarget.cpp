@@ -1445,6 +1445,50 @@ bool FindPartnerSummonTarget(HMODULE module,const MarriageCommitTarget& marriage
     error=nullptr;return true;
 }
 
+bool FindHomePartnerTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerSummonTarget& target,const char*& error) {
+    target.homeAction=nullptr;target.homeEnterReturn=nullptr;
+    error="home partner entry not uniquely verified";
+    Image image;if(!image.open(module) || !target.sendRva || !marriage.lookupRva)return false;
+    // 原生入口核对住宅所属角色，并在所选伴侣已有实例时不发送召唤请求。
+    constexpr BYTE houseTable[]={0x48,0x8b,0x46,0x68,0x4c,0x8b,0x98,0x68,0x01,0,0,0x45,0x8b,0x83,0x50,0x01,0,0};
+    constexpr BYTE houseRecords[]={0x4d,0x8b,0x8b,0x48,0x01,0,0};
+    constexpr BYTE roleRead[]={0x0f,0xb7,0x5f,0x04,0x66,0x89,0x5c,0x24,0x70};
+    constexpr BYTE boundGate[]={0x8b,0x40,0x04,0x80,0x7c,0x24,0x78,0,0x74,0x1f,0x85,0xc0,0x74,0x1f};
+    DWORD helper=0;unsigned helpers=0;
+    for(const auto& span:image.spans)if(span.executable) {
+        DWORD at=span.begin;
+        while(at<span.end && span.end-at>=5) {
+            const auto p=static_cast<const BYTE*>(std::memchr(image.base+at,0xe8,span.end-at-4));if(!p)break;
+            at=static_cast<DWORD>(p-image.base)+1;std::int32_t rel=0;std::memcpy(&rel,p+1,4);
+            if(static_cast<std::int64_t>(at)+4+rel!=target.sendRva)continue;
+            DWORD begin=0,size=0;if(!image.functionRange(at-1,begin,size) || size>512)continue;
+            if(!codeHas(image,begin,size,houseTable,sizeof(houseTable)) || !codeHas(image,begin,size,houseRecords,sizeof(houseRecords)) ||
+               !codeHas(image,begin,size,roleRead,sizeof(roleRead)) || !codeHas(image,begin,size,boundGate,sizeof(boundGate)))continue;
+            const auto calls=callsIn(image,begin,size);
+            if(std::none_of(calls.begin(),calls.end(),[&](const auto& call){return call.second==marriage.lookupRva;}))continue;
+            if(helper!=begin){helper=begin;++helpers;}
+        }
+    }
+    if(helpers!=1){error="home helper or house layout not uniquely verified";return false;}
+    constexpr BYTE enterArgs[]={0x41,0xb1,1,0x44,0x8b,0xc3,0x48,0x8b,0x55,0xc8};
+    constexpr BYTE leaveArgs[]={0x45,0x33,0xc9,0x44,0x8b,0xc3,0x48,0x8b,0x55,0xc8};
+    DWORD enter=0,parent=0,leaveParent=0;unsigned enters=0,leaves=0;
+    for(const auto& span:image.spans)if(span.executable) {
+        DWORD at=span.begin;
+        while(at<span.end && span.end-at>=5) {
+            const auto p=static_cast<const BYTE*>(std::memchr(image.base+at,0xe8,span.end-at-4));if(!p)break;
+            at=static_cast<DWORD>(p-image.base)+1;std::int32_t rel=0;std::memcpy(&rel,p+1,4);
+            if(static_cast<std::int64_t>(at)+4+rel!=helper || at-1<span.begin+10)continue;
+            DWORD begin=0;if(!image.functionRoot(at-1,begin))continue;
+            if(!std::memcmp(p-10,enterArgs,sizeof(enterArgs))){enter=at+4;parent=begin;++enters;}
+            else if(!std::memcmp(p-10,leaveArgs,sizeof(leaveArgs))){leaveParent=begin;++leaves;}
+        }
+    }
+    if(enters!=1 || leaves!=1 || parent!=leaveParent){error="home enter and leave callers not uniquely paired";return false;}
+    target.homeAction=reinterpret_cast<NativeHomePartnerAction>(image.base+helper);
+    target.homeEnterReturn=const_cast<BYTE*>(image.base+enter);error=nullptr;return true;
+}
+
 bool FindPartnerRecallTarget(HMODULE module,const MarriageCommitTarget& marriage,PartnerSummonTarget& target,const char*& error) {
     target.leaveParty=nullptr;target.partyVtable=nullptr;target.leavePartyRva=0;
     target.partyComponentOffset=target.partyActiveOffset=target.partyGroupOffset=target.partyLeaderOffset=0;

@@ -766,6 +766,7 @@ void RunBeautyForPartner(NativeBeautyEntry original,void* self,void* a2,void* a3
 }
 
 bool IsPartnerSpawnHookReady(){return spawnHookReady;}
+bool IsPartnerSpawnAllEnabled(){return InterlockedCompareExchange(&spawnAllEnabled,0,0)!=0;}
 bool IsPartnerRuntimeReady(){return runtimeHookReady;}
 bool IsPartnerRestoreHookReady(){return restoreHookReady;}
 

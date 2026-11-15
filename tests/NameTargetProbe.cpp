@@ -49,6 +49,15 @@ int wmain(int argc,wchar_t** argv) {
             names.managerOffset,names.registryOffset,names.bucketCountOffset,names.bucketsOffset,names.entriesOffset,names.statusOffset,names.nameOffset);
         printf("Summon send RVA=%lx dispatch RVA=%lx playable-key offset=%x\n",summon.sendRva,summon.dispatchRva,summon.playableKeyOffset);
         printf("Recall leave RVA=%lx party offsets=%x/%x/%x/%x\n",summon.leavePartyRva,summon.partyComponentOffset,summon.partyActiveOffset,summon.partyGroupOffset,summon.partyLeaderOffset);
+        const char* homeError=nullptr;const bool homeOk=FindHomePartnerTarget(module,marriage,summon,homeError);
+        printf("Home entry: %s (%s)\n",homeOk?"PASS":"UNAVAILABLE",homeError?homeError:"verified");
+        if(homeOk) {
+            auto* callReturn=static_cast<BYTE*>(summon.homeEnterReturn);const BYTE old=callReturn[-15];callReturn[-15]^=0x01;
+            PartnerSummonTarget changed=summon;const char* changedError=nullptr;
+            if(FindHomePartnerTarget(module,marriage,changed,changedError)){puts("Changed home entry was incorrectly accepted.");ok=false;}
+            callReturn[-15]=old;
+            if(!FindHomePartnerTarget(module,marriage,changed,changedError)){puts("Restored home entry was incorrectly rejected.");ok=false;}
+        }
         printf("Character original name lookup RVA=%llx\n",ui.characterInfo ? reinterpret_cast<const BYTE*>(ui.characterInfo)-image : 0ull);
         if(ui.characterInfo) {
             auto* lookup=reinterpret_cast<BYTE*>(ui.characterInfo);const auto original=*lookup;*lookup=0xcc;
